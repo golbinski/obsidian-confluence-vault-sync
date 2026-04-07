@@ -170,14 +170,37 @@ export async function runSyncForTarget(
   const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
   const imageDownloader = new ImageDownloader(client, vault, maxImageDownloadSizeKb);
 
-  // 1. Fetch all pages
+  // 1. Fetch all pages and the space home page ID
   console.log(`${LOG} fetching page list…`);
-  const pages = await client.getSpacePages(spaceKey);
-  console.log(`${LOG} ${pages.length} pages to sync`);
-  new Notice(`${spaceKey}: ${pages.length} pages found, writing…`);
+  const [pages, homePageId] = await Promise.all([
+    client.getSpacePages(spaceKey),
+    client.getSpaceHomePageId(spaceKey),
+  ]);
+  console.log(`${LOG} ${pages.length} pages fetched, home page ID: ${homePageId ?? 'unknown'}`);
 
   // 2. Build tree and compute paths
-  const tree = buildTree(pages);
+  const fullTree = buildTree(pages);
+
+  // If we know the home page, restrict to just that subtree so user profile
+  // pages and other disconnected sections are excluded
+  let tree = fullTree;
+  if (homePageId) {
+    const homeRoot = fullTree.find((n) => n.page.id === homePageId);
+    if (homeRoot) {
+      tree = [homeRoot];
+      console.log(`${LOG} rooted tree at home page "${homeRoot.page.title}"`);
+    } else {
+      console.warn(`${LOG} home page ${homePageId} not found in page list — syncing all roots`);
+    }
+  }
+
+  // Count pages actually in the filtered tree
+  function countNodes(nodes: PageNode[]): number {
+    return nodes.reduce((n, node) => n + 1 + countNodes(node.children), 0);
+  }
+  const pageCount = countNodes(tree);
+  console.log(`${LOG} ${pageCount} pages to sync`);
+  new Notice(`${spaceKey}: ${pageCount} pages found, writing…`);
   const pathMap = new Map<string, string>();
   computePaths(tree, syncFolderPath, pathMap);
 
@@ -190,16 +213,27 @@ export async function runSyncForTarget(
     // Already exists
   }
 
+  // Flatten the filtered tree back to a list for iteration
+  function flattenTree(nodes: PageNode[]): ConfluencePage[] {
+    const result: ConfluencePage[] = [];
+    for (const node of nodes) {
+      result.push(node.page);
+      result.push(...flattenTree(node.children));
+    }
+    return result;
+  }
+  const filteredPages = flattenTree(tree);
+
   const converter = new AdfConverter(pathMap, confluenceBaseUrl);
   let syncedCount = 0;
   let failedCount = 0;
 
   // 4. Sync each page
-  for (const page of pages) {
+  for (const page of filteredPages) {
     const vaultPath = pathMap.get(page.id);
     if (!vaultPath) continue;
 
-    console.log(`${LOG} [${syncedCount + failedCount + 1}/${pages.length}] "${page.title}" → ${vaultPath}`);
+    console.log(`${LOG} [${syncedCount + failedCount + 1}/${filteredPages.length}] "${page.title}" → ${vaultPath}`);
 
     try {
       const adf = await client.getPageBody(page.id);

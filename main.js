@@ -82,6 +82,12 @@ var init_confluence_client = __esm({
         }
         return data.results[0].name;
       }
+      /** Returns the ID of the space's designated home (root) page. */
+      async getSpaceHomePageId(spaceKey) {
+        var _a, _b;
+        const data = await this.request(`${this.baseUrl}/wiki/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`);
+        return (_b = (_a = data.results[0]) == null ? void 0 : _a.homepageId) != null ? _b : null;
+      }
       async getSpacePages(spaceKey) {
         var _a, _b;
         const pages = [];
@@ -521,10 +527,28 @@ async function runSyncForTarget(target, settings, vault) {
   const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
   const imageDownloader = new ImageDownloader(client, vault, maxImageDownloadSizeKb);
   console.log(`${LOG2} fetching page list\u2026`);
-  const pages = await client.getSpacePages(spaceKey);
-  console.log(`${LOG2} ${pages.length} pages to sync`);
-  new import_obsidian3.Notice(`${spaceKey}: ${pages.length} pages found, writing\u2026`);
-  const tree = buildTree(pages);
+  const [pages, homePageId] = await Promise.all([
+    client.getSpacePages(spaceKey),
+    client.getSpaceHomePageId(spaceKey)
+  ]);
+  console.log(`${LOG2} ${pages.length} pages fetched, home page ID: ${homePageId != null ? homePageId : "unknown"}`);
+  const fullTree = buildTree(pages);
+  let tree = fullTree;
+  if (homePageId) {
+    const homeRoot = fullTree.find((n) => n.page.id === homePageId);
+    if (homeRoot) {
+      tree = [homeRoot];
+      console.log(`${LOG2} rooted tree at home page "${homeRoot.page.title}"`);
+    } else {
+      console.warn(`${LOG2} home page ${homePageId} not found in page list \u2014 syncing all roots`);
+    }
+  }
+  function countNodes(nodes) {
+    return nodes.reduce((n, node) => n + 1 + countNodes(node.children), 0);
+  }
+  const pageCount = countNodes(tree);
+  console.log(`${LOG2} ${pageCount} pages to sync`);
+  new import_obsidian3.Notice(`${spaceKey}: ${pageCount} pages found, writing\u2026`);
   const pathMap = /* @__PURE__ */ new Map();
   computePaths(tree, syncFolderPath, pathMap);
   await wipeSyncFolder(vault, syncFolderPath);
@@ -532,14 +556,23 @@ async function runSyncForTarget(target, settings, vault) {
     await vault.adapter.mkdir(syncFolderPath);
   } catch (e) {
   }
+  function flattenTree(nodes) {
+    const result = [];
+    for (const node of nodes) {
+      result.push(node.page);
+      result.push(...flattenTree(node.children));
+    }
+    return result;
+  }
+  const filteredPages = flattenTree(tree);
   const converter = new AdfConverter(pathMap, confluenceBaseUrl);
   let syncedCount = 0;
   let failedCount = 0;
-  for (const page of pages) {
+  for (const page of filteredPages) {
     const vaultPath = pathMap.get(page.id);
     if (!vaultPath)
       continue;
-    console.log(`${LOG2} [${syncedCount + failedCount + 1}/${pages.length}] "${page.title}" \u2192 ${vaultPath}`);
+    console.log(`${LOG2} [${syncedCount + failedCount + 1}/${filteredPages.length}] "${page.title}" \u2192 ${vaultPath}`);
     try {
       const adf = await client.getPageBody(page.id);
       const dir = vaultPath.split("/").slice(0, -1).join("/");

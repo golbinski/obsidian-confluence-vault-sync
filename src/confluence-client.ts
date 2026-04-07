@@ -76,6 +76,14 @@ export class ConfluenceClient {
     return data.results[0].name;
   }
 
+  /** Returns the ID of the space's designated home (root) page. */
+  async getSpaceHomePageId(spaceKey: string): Promise<string | null> {
+    const data = await this.request<{
+      results: Array<{ homepageId?: string }>;
+    }>(`${this.baseUrl}/wiki/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`);
+    return data.results[0]?.homepageId ?? null;
+  }
+
   async getSpacePages(spaceKey: string): Promise<ConfluencePage[]> {
     type SpacePagesResponse = {
       results: Array<{ id: string; title: string; parentId?: string | null }>;
