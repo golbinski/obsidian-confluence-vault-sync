@@ -255,6 +255,20 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
           })
       );
 
+    new Setting(containerEl)
+      .setName('Sync concurrency')
+      .setDesc('Number of pages fetched in parallel (1–20). Higher values are faster but may hit Confluence rate limits.')
+      .addSlider((slider) =>
+        slider
+          .setLimits(1, 20, 1)
+          .setValue(this.plugin.settings.syncConcurrency)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            this.plugin.settings.syncConcurrency = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
     // Test connection
     let testBtn: ButtonComponent;
     new Setting(containerEl)

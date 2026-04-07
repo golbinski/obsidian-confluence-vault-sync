@@ -8,6 +8,7 @@ export interface ConfluenceVaultSyncSettings {
   confluenceEmail: string;
   confluenceApiToken: string;
   maxImageDownloadSizeKb: number;
+  syncConcurrency: number;
   syncTargets: SyncTarget[];
 }
 
@@ -16,5 +17,6 @@ export const DEFAULT_SETTINGS: ConfluenceVaultSyncSettings = {
   confluenceEmail: '',
   confluenceApiToken: '',
   maxImageDownloadSizeKb: 500,
+  syncConcurrency: 5,
   syncTargets: [],
 };

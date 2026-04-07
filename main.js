@@ -171,6 +171,7 @@ var DEFAULT_SETTINGS = {
   confluenceEmail: "",
   confluenceApiToken: "",
   maxImageDownloadSizeKb: 500,
+  syncConcurrency: 5,
   syncTargets: []
 };
 
@@ -534,6 +535,18 @@ async function removeOrphanedFiles(vault, syncFolderPath, expectedPaths) {
   }
   await cleanDir(syncFolderPath);
 }
+async function runWithConcurrency(items, limit, fn) {
+  let next = 0;
+  async function worker() {
+    while (next < items.length) {
+      const i = next++;
+      await fn(items[i], i);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker)
+  );
+}
 function buildFrontmatter(pageId, baseUrl, spaceKey, title) {
   const url = `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}`;
   const lastSynced = (/* @__PURE__ */ new Date()).toISOString();
@@ -551,7 +564,13 @@ function buildFrontmatter(pageId, baseUrl, spaceKey, title) {
 }
 async function runSyncForTarget(target, settings, vault, onProgress) {
   const { spaceKey, syncFolderPath } = target;
-  const { confluenceBaseUrl, confluenceEmail, confluenceApiToken, maxImageDownloadSizeKb } = settings;
+  const {
+    confluenceBaseUrl,
+    confluenceEmail,
+    confluenceApiToken,
+    maxImageDownloadSizeKb,
+    syncConcurrency
+  } = settings;
   console.log(`${LOG2} starting sync for space "${spaceKey}" \u2192 "${syncFolderPath}"`);
   new import_obsidian3.Notice(`Syncing ${spaceKey}\u2026`);
   const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
@@ -587,19 +606,21 @@ async function runSyncForTarget(target, settings, vault, onProgress) {
   let syncedCount = 0;
   let skippedCount = 0;
   let failedCount = 0;
+  let completedCount = 0;
   new import_obsidian3.Notice(`${spaceKey}: ${filteredPages.length} pages found, syncing\u2026`);
-  for (let i = 0; i < filteredPages.length; i++) {
-    const page = filteredPages[i];
+  console.log(`${LOG2} syncing ${filteredPages.length} pages with concurrency ${syncConcurrency}`);
+  await runWithConcurrency(filteredPages, syncConcurrency, async (page, i) => {
     const vaultPath = pathMap.get(page.id);
     if (!vaultPath)
-      continue;
-    onProgress == null ? void 0 : onProgress(i + 1, filteredPages.length, page.title);
+      return;
     const existing = existingFiles.get(page.id);
     const isUpToDate = existing && existing.path === vaultPath && new Date(existing.lastSynced).getTime() >= new Date(page.versionDate).getTime();
+    completedCount++;
+    onProgress == null ? void 0 : onProgress(completedCount, filteredPages.length, page.title);
     if (isUpToDate) {
       skippedCount++;
       console.debug(`${LOG2} [${i + 1}/${filteredPages.length}] skipping unchanged "${page.title}"`);
-      continue;
+      return;
     }
     console.log(`${LOG2} [${i + 1}/${filteredPages.length}] writing "${page.title}" \u2192 ${vaultPath}`);
     try {
@@ -633,7 +654,7 @@ async function runSyncForTarget(target, settings, vault, onProgress) {
       failedCount++;
       console.warn(`${LOG2} failed to sync page ${page.id} "${page.title}":`, err);
     }
-  }
+  });
   await removeOrphanedFiles(vault, syncFolderPath, expectedPaths);
   console.log(
     `${LOG2} done \u2014 ${syncedCount} updated, ${skippedCount} skipped (unchanged), ${failedCount} failed`
@@ -858,6 +879,12 @@ var ConfluenceVaultSyncSettingTab = class extends import_obsidian4.PluginSetting
           this.plugin.settings.maxImageDownloadSizeKb = num;
           await this.plugin.saveSettings();
         }
+      })
+    );
+    new import_obsidian4.Setting(containerEl).setName("Sync concurrency").setDesc("Number of pages fetched in parallel (1\u201320). Higher values are faster but may hit Confluence rate limits.").addSlider(
+      (slider) => slider.setLimits(1, 20, 1).setValue(this.plugin.settings.syncConcurrency).setDynamicTooltip().onChange(async (value) => {
+        this.plugin.settings.syncConcurrency = value;
+        await this.plugin.saveSettings();
       })
     );
     let testBtn;

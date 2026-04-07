@@ -165,6 +165,28 @@ async function removeOrphanedFiles(
   await cleanDir(syncFolderPath);
 }
 
+/**
+ * Runs `fn` over all `items` with at most `limit` concurrent executions.
+ * Uses a shared index so workers pull the next item as soon as they finish,
+ * keeping all slots busy without pre-slicing the array.
+ */
+async function runWithConcurrency<T>(
+  items: T[],
+  limit: number,
+  fn: (item: T, index: number) => Promise<void>
+): Promise<void> {
+  let next = 0;
+  async function worker(): Promise<void> {
+    while (next < items.length) {
+      const i = next++;
+      await fn(items[i], i);
+    }
+  }
+  await Promise.all(
+    Array.from({ length: Math.min(limit, items.length) }, worker)
+  );
+}
+
 function buildFrontmatter(
   pageId: string,
   baseUrl: string,
@@ -193,8 +215,13 @@ export async function runSyncForTarget(
   onProgress?: (current: number, total: number, label: string) => void
 ): Promise<number> {
   const { spaceKey, syncFolderPath } = target;
-  const { confluenceBaseUrl, confluenceEmail, confluenceApiToken, maxImageDownloadSizeKb } =
-    settings;
+  const {
+    confluenceBaseUrl,
+    confluenceEmail,
+    confluenceApiToken,
+    maxImageDownloadSizeKb,
+    syncConcurrency,
+  } = settings;
 
   console.log(`${LOG} starting sync for space "${spaceKey}" → "${syncFolderPath}"`);
   new Notice(`Syncing ${spaceKey}…`);
@@ -240,16 +267,15 @@ export async function runSyncForTarget(
   let syncedCount = 0;
   let skippedCount = 0;
   let failedCount = 0;
+  let completedCount = 0;
 
   new Notice(`${spaceKey}: ${filteredPages.length} pages found, syncing…`);
+  console.log(`${LOG} syncing ${filteredPages.length} pages with concurrency ${syncConcurrency}`);
 
-  // 6. Sync each page
-  for (let i = 0; i < filteredPages.length; i++) {
-    const page = filteredPages[i];
+  // 6. Sync pages in parallel with a concurrency cap
+  await runWithConcurrency(filteredPages, syncConcurrency, async (page, i) => {
     const vaultPath = pathMap.get(page.id);
-    if (!vaultPath) continue;
-
-    onProgress?.(i + 1, filteredPages.length, page.title);
+    if (!vaultPath) return;
 
     const existing = existingFiles.get(page.id);
     const isUpToDate =
@@ -257,10 +283,13 @@ export async function runSyncForTarget(
       existing.path === vaultPath &&
       new Date(existing.lastSynced).getTime() >= new Date(page.versionDate).getTime();
 
+    completedCount++;
+    onProgress?.(completedCount, filteredPages.length, page.title);
+
     if (isUpToDate) {
       skippedCount++;
       console.debug(`${LOG} [${i + 1}/${filteredPages.length}] skipping unchanged "${page.title}"`);
-      continue;
+      return;
     }
 
     console.log(`${LOG} [${i + 1}/${filteredPages.length}] writing "${page.title}" → ${vaultPath}`);
@@ -286,7 +315,6 @@ export async function runSyncForTarget(
 
       const content = buildFrontmatter(page.id, confluenceBaseUrl, spaceKey, page.title) + markdown;
 
-      // Make writable before overwriting if the file already exists
       if (existing) makeWritable(vault, vaultPath);
       await vault.adapter.write(vaultPath, content);
       makeReadOnly(vault, vaultPath);
@@ -296,7 +324,7 @@ export async function runSyncForTarget(
       failedCount++;
       console.warn(`${LOG} failed to sync page ${page.id} "${page.title}":`, err);
     }
-  }
+  });
 
   // 7. Remove files for pages deleted from Confluence
   await removeOrphanedFiles(vault, syncFolderPath, expectedPaths);
