@@ -1,3 +1,4 @@
+import { requestUrl } from 'obsidian';
 import type { ConfluenceClient } from './confluence-client';
 import type { Vault } from 'obsidian';
 
@@ -31,25 +32,21 @@ export class ImageDownloader {
     const baseUrl = this.client.getBaseUrl();
     const authHeader = this.client.getAuthHeader();
 
-    // Fetch attachment metadata
-    const url = `${baseUrl}/wiki/rest/api/content/${pageId}/child/attachment?filename=&mediaType=&expand=metadata,extensions`;
-    const response = await fetch(url, {
+    const url = `${baseUrl}/wiki/rest/api/content/${pageId}/child/attachment?expand=metadata,extensions`;
+    const response = await requestUrl({
+      url,
       headers: { Authorization: authHeader, Accept: 'application/json' },
     });
 
-    if (!response.ok) {
+    if (response.status >= 400) {
       throw new Error(`Attachment metadata error ${response.status} for page ${pageId}`);
     }
 
-    const data = (await response.json()) as AttachmentResponse;
+    const data = response.json as AttachmentResponse;
 
-    // Find attachment by media ID (stored in attachment id without "att" prefix sometimes)
     const attachment =
-      data.results.find((a) => {
-        // Confluence attachment IDs may not directly match media node IDs
-        // Fall back to first image attachment if no direct match
-        return a.metadata.mediaType.startsWith('image/');
-      }) ?? data.results[0];
+      data.results.find((a) => a.metadata.mediaType.startsWith('image/')) ??
+      data.results[0];
 
     if (!attachment) {
       return `[attachment](${baseUrl}/wiki/spaces)`;
@@ -57,13 +54,11 @@ export class ImageDownloader {
 
     const mediaType = attachment.metadata.mediaType;
     const fileSize = attachment.extensions.fileSize;
-    const downloadPath = attachment._links.download;
-    const downloadUrl = `${baseUrl}${downloadPath}`;
+    const downloadUrl = `${baseUrl}${attachment._links.download}`;
     const filename = attachment.title;
 
     if (mediaType.startsWith('image/')) {
       if (fileSize <= this.maxSizeBytes) {
-        // Download and store locally
         const binary = await this.client.fetchBinary(downloadUrl);
         const attachmentsDir = `${syncFolderPath}/attachments`;
         const filePath = `${attachmentsDir}/${filename}`;
@@ -71,7 +66,7 @@ export class ImageDownloader {
         try {
           await this.vault.adapter.mkdir(attachmentsDir);
         } catch {
-          // Directory may already exist
+          // Already exists
         }
 
         await this.vault.adapter.writeBinary(filePath, binary);

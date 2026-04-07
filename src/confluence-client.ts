@@ -1,3 +1,5 @@
+import { requestUrl } from 'obsidian';
+
 export interface ConfluencePage {
   id: string;
   title: string;
@@ -37,16 +39,17 @@ export class ConfluenceClient {
 
   private async request<T>(url: string): Promise<T> {
     console.debug(`${LOG} GET ${url}`);
-    const response = await fetch(url, {
+    const response = await requestUrl({
+      url,
       headers: {
         Authorization: this.authHeader,
         Accept: 'application/json',
       },
     });
-    if (!response.ok) {
-      throw new Error(`Confluence API error ${response.status} ${response.statusText} — ${url}`);
+    if (response.status >= 400) {
+      throw new Error(`Confluence API error ${response.status} — ${url}`);
     }
-    return response.json() as Promise<T>;
+    return response.json as T;
   }
 
   /** Verifies credentials by fetching the current user. Returns display name on success. */
@@ -74,7 +77,6 @@ export class ConfluenceClient {
       _links?: { next?: string };
     };
     const pages: ConfluencePage[] = [];
-    // The v2 API uses "space-key" (hyphenated), not "spaceKey"
     let url: string | null =
       `${this.baseUrl}/wiki/api/v2/pages?space-key=${encodeURIComponent(spaceKey)}&limit=250`;
 
@@ -91,7 +93,6 @@ export class ConfluenceClient {
         });
       }
 
-      // _links.next is already a full path like /wiki/api/v2/pages?cursor=...
       const next: string | undefined = data._links?.next;
       url = next ? `${this.baseUrl}${next}` : null;
     }
@@ -137,13 +138,14 @@ export class ConfluenceClient {
 
   async fetchBinary(url: string): Promise<ArrayBuffer> {
     console.debug(`${LOG} downloading binary: ${url}`);
-    const response = await fetch(url, {
+    const response = await requestUrl({
+      url,
       headers: { Authorization: this.authHeader },
     });
-    if (!response.ok) {
+    if (response.status >= 400) {
       throw new Error(`Binary fetch error ${response.status} — ${url}`);
     }
-    return response.arrayBuffer();
+    return response.arrayBuffer;
   }
 
   getBaseUrl(): string {

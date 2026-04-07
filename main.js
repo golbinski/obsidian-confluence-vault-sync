@@ -35,10 +35,11 @@ var confluence_client_exports = {};
 __export(confluence_client_exports, {
   ConfluenceClient: () => ConfluenceClient
 });
-var LOG, ConfluenceClient;
+var import_obsidian, LOG, ConfluenceClient;
 var init_confluence_client = __esm({
   "src/confluence-client.ts"() {
     "use strict";
+    import_obsidian = require("obsidian");
     LOG = "[Confluence Vault Sync]";
     ConfluenceClient = class {
       constructor(baseUrl, email, apiToken) {
@@ -47,16 +48,17 @@ var init_confluence_client = __esm({
       }
       async request(url) {
         console.debug(`${LOG} GET ${url}`);
-        const response = await fetch(url, {
+        const response = await (0, import_obsidian.requestUrl)({
+          url,
           headers: {
             Authorization: this.authHeader,
             Accept: "application/json"
           }
         });
-        if (!response.ok) {
-          throw new Error(`Confluence API error ${response.status} ${response.statusText} \u2014 ${url}`);
+        if (response.status >= 400) {
+          throw new Error(`Confluence API error ${response.status} \u2014 ${url}`);
         }
-        return response.json();
+        return response.json;
       }
       /** Verifies credentials by fetching the current user. Returns display name on success. */
       async testConnection() {
@@ -122,13 +124,14 @@ var init_confluence_client = __esm({
       }
       async fetchBinary(url) {
         console.debug(`${LOG} downloading binary: ${url}`);
-        const response = await fetch(url, {
+        const response = await (0, import_obsidian.requestUrl)({
+          url,
           headers: { Authorization: this.authHeader }
         });
-        if (!response.ok) {
+        if (response.status >= 400) {
           throw new Error(`Binary fetch error ${response.status} \u2014 ${url}`);
         }
-        return response.arrayBuffer();
+        return response.arrayBuffer;
       }
       getBaseUrl() {
         return this.baseUrl;
@@ -146,7 +149,7 @@ __export(main_exports, {
   default: () => ConfluenceVaultSyncPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian2 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // src/settings.ts
 var DEFAULT_SETTINGS = {
@@ -158,7 +161,7 @@ var DEFAULT_SETTINGS = {
 };
 
 // src/sync-engine.ts
-var import_obsidian = require("obsidian");
+var import_obsidian3 = require("obsidian");
 init_confluence_client();
 
 // src/adf-converter.ts
@@ -339,6 +342,7 @@ function escapeRegex(str) {
 }
 
 // src/image-downloader.ts
+var import_obsidian2 = require("obsidian");
 var ImageDownloader = class {
   constructor(client, vault, maxImageDownloadSizeKb) {
     this.client = client;
@@ -349,24 +353,22 @@ var ImageDownloader = class {
     var _a;
     const baseUrl = this.client.getBaseUrl();
     const authHeader = this.client.getAuthHeader();
-    const url = `${baseUrl}/wiki/rest/api/content/${pageId}/child/attachment?filename=&mediaType=&expand=metadata,extensions`;
-    const response = await fetch(url, {
+    const url = `${baseUrl}/wiki/rest/api/content/${pageId}/child/attachment?expand=metadata,extensions`;
+    const response = await (0, import_obsidian2.requestUrl)({
+      url,
       headers: { Authorization: authHeader, Accept: "application/json" }
     });
-    if (!response.ok) {
+    if (response.status >= 400) {
       throw new Error(`Attachment metadata error ${response.status} for page ${pageId}`);
     }
-    const data = await response.json();
-    const attachment = (_a = data.results.find((a) => {
-      return a.metadata.mediaType.startsWith("image/");
-    })) != null ? _a : data.results[0];
+    const data = response.json;
+    const attachment = (_a = data.results.find((a) => a.metadata.mediaType.startsWith("image/"))) != null ? _a : data.results[0];
     if (!attachment) {
       return `[attachment](${baseUrl}/wiki/spaces)`;
     }
     const mediaType = attachment.metadata.mediaType;
     const fileSize = attachment.extensions.fileSize;
-    const downloadPath = attachment._links.download;
-    const downloadUrl = `${baseUrl}${downloadPath}`;
+    const downloadUrl = `${baseUrl}${attachment._links.download}`;
     const filename = attachment.title;
     if (mediaType.startsWith("image/")) {
       if (fileSize <= this.maxSizeBytes) {
@@ -506,13 +508,13 @@ async function runSyncForTarget(target, settings, vault) {
   const { spaceKey, syncFolderPath } = target;
   const { confluenceBaseUrl, confluenceEmail, confluenceApiToken, maxImageDownloadSizeKb } = settings;
   console.log(`${LOG2} starting sync for space "${spaceKey}" \u2192 "${syncFolderPath}"`);
-  new import_obsidian.Notice(`Syncing ${spaceKey}\u2026`);
+  new import_obsidian3.Notice(`Syncing ${spaceKey}\u2026`);
   const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
   const imageDownloader = new ImageDownloader(client, vault, maxImageDownloadSizeKb);
   console.log(`${LOG2} fetching page list\u2026`);
   const pages = await client.getSpacePages(spaceKey);
   console.log(`${LOG2} ${pages.length} pages to sync`);
-  new import_obsidian.Notice(`${spaceKey}: ${pages.length} pages found, writing\u2026`);
+  new import_obsidian3.Notice(`${spaceKey}: ${pages.length} pages found, writing\u2026`);
   const tree = buildTree(pages);
   const pathMap = /* @__PURE__ */ new Map();
   computePaths(tree, syncFolderPath, pathMap);
@@ -603,7 +605,7 @@ async function resolveMediaNodes(adf, pageId, syncFolderPath, imageDownloader, c
 }
 
 // main.ts
-var ConfluenceVaultSyncPlugin = class extends import_obsidian2.Plugin {
+var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
   async onload() {
     await this.loadSettings();
     this.addRibbonIcon("refresh-cw", "Sync Confluence", () => {
@@ -619,7 +621,7 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian2.Plugin {
     this.addSettingTab(new ConfluenceVaultSyncSettingTab(this.app, this));
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (file instanceof import_obsidian2.TFolder) {
+        if (file instanceof import_obsidian4.TFolder) {
           const target = this.settings.syncTargets.find(
             (t) => t.syncFolderPath === file.path
           );
@@ -637,7 +639,7 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian2.Plugin {
           (t) => file.path.startsWith(t.syncFolderPath + "/")
         );
         if (isManaged) {
-          new import_obsidian2.Notice(
+          new import_obsidian4.Notice(
             "This file is managed by Confluence Vault Sync and cannot be edited."
           );
           this.app.vault.adapter.read(file.path).then((content) => {
@@ -669,7 +671,7 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian2.Plugin {
   async syncAll() {
     const missing = this.validateSettings();
     if (missing.length > 0) {
-      new import_obsidian2.Notice(`Confluence Vault Sync: missing settings \u2014 ${missing.join(", ")}`);
+      new import_obsidian4.Notice(`Confluence Vault Sync: missing settings \u2014 ${missing.join(", ")}`);
       return;
     }
     let totalPages = 0;
@@ -679,31 +681,31 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian2.Plugin {
         const count = await runSyncForTarget(target, this.settings, this.app.vault);
         totalPages += count;
       }
-      new import_obsidian2.Notice(
+      new import_obsidian4.Notice(
         `Sync complete \u2014 ${targets.length} space${targets.length !== 1 ? "s" : ""}, ${totalPages} pages synced`
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      new import_obsidian2.Notice(`Sync failed: ${message}`);
+      new import_obsidian4.Notice(`Sync failed: ${message}`);
     }
   }
   async syncTarget(target) {
     const missing = this.validateSettings();
     const settingsOnly = missing.filter((m) => m !== "at least one Sync Target");
     if (settingsOnly.length > 0) {
-      new import_obsidian2.Notice(`Confluence Vault Sync: missing settings \u2014 ${settingsOnly.join(", ")}`);
+      new import_obsidian4.Notice(`Confluence Vault Sync: missing settings \u2014 ${settingsOnly.join(", ")}`);
       return;
     }
     try {
       const count = await runSyncForTarget(target, this.settings, this.app.vault);
-      new import_obsidian2.Notice(`Sync complete \u2014 ${target.spaceKey}: ${count} pages synced`);
+      new import_obsidian4.Notice(`Sync complete \u2014 ${target.spaceKey}: ${count} pages synced`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      new import_obsidian2.Notice(`Sync failed: ${message}`);
+      new import_obsidian4.Notice(`Sync failed: ${message}`);
     }
   }
 };
-var ConfluenceVaultSyncSettingTab = class extends import_obsidian2.PluginSettingTab {
+var ConfluenceVaultSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -712,26 +714,26 @@ var ConfluenceVaultSyncSettingTab = class extends import_obsidian2.PluginSetting
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Confluence Vault Sync" });
-    new import_obsidian2.Setting(containerEl).setName("Confluence Base URL").setDesc("e.g. https://yourorg.atlassian.net").addText(
+    new import_obsidian4.Setting(containerEl).setName("Confluence Base URL").setDesc("e.g. https://yourorg.atlassian.net").addText(
       (text) => text.setPlaceholder("https://yourorg.atlassian.net").setValue(this.plugin.settings.confluenceBaseUrl).onChange(async (value) => {
         this.plugin.settings.confluenceBaseUrl = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Confluence Email").setDesc("Your Atlassian account email").addText(
+    new import_obsidian4.Setting(containerEl).setName("Confluence Email").setDesc("Your Atlassian account email").addText(
       (text) => text.setPlaceholder("you@example.com").setValue(this.plugin.settings.confluenceEmail).onChange(async (value) => {
         this.plugin.settings.confluenceEmail = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian2.Setting(containerEl).setName("Confluence API Token").setDesc("Atlassian API token (stored in plugin data)").addText((text) => {
+    new import_obsidian4.Setting(containerEl).setName("Confluence API Token").setDesc("Atlassian API token (stored in plugin data)").addText((text) => {
       text.inputEl.type = "password";
       text.setPlaceholder("\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022").setValue(this.plugin.settings.confluenceApiToken).onChange(async (value) => {
         this.plugin.settings.confluenceApiToken = value;
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian2.Setting(containerEl).setName("Max image download size (KB)").setDesc("Images at or below this size are downloaded locally").addText(
+    new import_obsidian4.Setting(containerEl).setName("Max image download size (KB)").setDesc("Images at or below this size are downloaded locally").addText(
       (text) => text.setPlaceholder("500").setValue(String(this.plugin.settings.maxImageDownloadSizeKb)).onChange(async (value) => {
         const num = parseInt(value, 10);
         if (!isNaN(num) && num > 0) {
@@ -741,12 +743,12 @@ var ConfluenceVaultSyncSettingTab = class extends import_obsidian2.PluginSetting
       })
     );
     let testBtn;
-    new import_obsidian2.Setting(containerEl).setName("Test connection").setDesc("Verify credentials and check access to each configured space").addButton((btn) => {
+    new import_obsidian4.Setting(containerEl).setName("Test connection").setDesc("Verify credentials and check access to each configured space").addButton((btn) => {
       testBtn = btn;
       btn.setButtonText("Test").onClick(async () => {
         const { confluenceBaseUrl, confluenceEmail, confluenceApiToken, syncTargets } = this.plugin.settings;
         if (!confluenceBaseUrl || !confluenceEmail || !confluenceApiToken) {
-          new import_obsidian2.Notice("Fill in Base URL, Email, and API Token first.");
+          new import_obsidian4.Notice("Fill in Base URL, Email, and API Token first.");
           return;
         }
         testBtn.setButtonText("Testing\u2026").setDisabled(true);
@@ -754,21 +756,21 @@ var ConfluenceVaultSyncSettingTab = class extends import_obsidian2.PluginSetting
           const { ConfluenceClient: ConfluenceClient2 } = await Promise.resolve().then(() => (init_confluence_client(), confluence_client_exports));
           const client = new ConfluenceClient2(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
           const displayName = await client.testConnection();
-          new import_obsidian2.Notice(`Connected as ${displayName}`);
+          new import_obsidian4.Notice(`Connected as ${displayName}`);
           for (const target of syncTargets) {
             if (!target.spaceKey)
               continue;
             try {
               const spaceName = await client.checkSpaceAccess(target.spaceKey);
-              new import_obsidian2.Notice(`Space "${target.spaceKey}": OK (${spaceName})`);
+              new import_obsidian4.Notice(`Space "${target.spaceKey}": OK (${spaceName})`);
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
-              new import_obsidian2.Notice(`Space "${target.spaceKey}": ${msg}`, 8e3);
+              new import_obsidian4.Notice(`Space "${target.spaceKey}": ${msg}`, 8e3);
             }
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          new import_obsidian2.Notice(`Connection failed: ${msg}`, 8e3);
+          new import_obsidian4.Notice(`Connection failed: ${msg}`, 8e3);
         } finally {
           testBtn.setButtonText("Test").setDisabled(false);
         }
