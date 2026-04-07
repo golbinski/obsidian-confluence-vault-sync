@@ -48,25 +48,29 @@ var init_confluence_client = __esm({
       }
       async request(url) {
         console.debug(`${LOG} GET ${url}`);
-        const response = await (0, import_obsidian.requestUrl)({
-          url,
-          headers: {
-            Authorization: this.authHeader,
-            Accept: "application/json"
-          }
-        });
-        if (response.status >= 400) {
-          throw new Error(`Confluence API error ${response.status} \u2014 ${url}`);
+        try {
+          const response = await (0, import_obsidian.requestUrl)({
+            url,
+            headers: {
+              Authorization: this.authHeader,
+              Accept: "application/json"
+            }
+          });
+          return response.json;
+        } catch (err) {
+          const status = err.status;
+          throw new Error(
+            `Confluence API error${status ? ` ${status}` : ""} \u2014 ${url}`
+          );
         }
-        return response.json;
       }
       /** Verifies credentials by fetching the current user. Returns display name on success. */
       async testConnection() {
         var _a, _b;
         const data = await this.request(
-          `${this.baseUrl}/wiki/rest/api/myself`
+          `${this.baseUrl}/wiki/rest/api/user/current`
         );
-        return (_b = (_a = data.displayName) != null ? _a : data.email) != null ? _b : "unknown user";
+        return (_b = (_a = data.displayName) != null ? _a : data.publicName) != null ? _b : "unknown user";
       }
       /** Verifies that a space with the given key exists and is accessible. Returns the space name. */
       async checkSpaceAccess(spaceKey) {
@@ -124,14 +128,16 @@ var init_confluence_client = __esm({
       }
       async fetchBinary(url) {
         console.debug(`${LOG} downloading binary: ${url}`);
-        const response = await (0, import_obsidian.requestUrl)({
-          url,
-          headers: { Authorization: this.authHeader }
-        });
-        if (response.status >= 400) {
-          throw new Error(`Binary fetch error ${response.status} \u2014 ${url}`);
+        try {
+          const response = await (0, import_obsidian.requestUrl)({
+            url,
+            headers: { Authorization: this.authHeader }
+          });
+          return response.arrayBuffer;
+        } catch (err) {
+          const status = err.status;
+          throw new Error(`Binary fetch error${status ? ` ${status}` : ""} \u2014 ${url}`);
         }
-        return response.arrayBuffer;
       }
       getBaseUrl() {
         return this.baseUrl;
@@ -354,12 +360,15 @@ var ImageDownloader = class {
     const baseUrl = this.client.getBaseUrl();
     const authHeader = this.client.getAuthHeader();
     const url = `${baseUrl}/wiki/rest/api/content/${pageId}/child/attachment?expand=metadata,extensions`;
-    const response = await (0, import_obsidian2.requestUrl)({
-      url,
-      headers: { Authorization: authHeader, Accept: "application/json" }
-    });
-    if (response.status >= 400) {
-      throw new Error(`Attachment metadata error ${response.status} for page ${pageId}`);
+    let response;
+    try {
+      response = await (0, import_obsidian2.requestUrl)({
+        url,
+        headers: { Authorization: authHeader, Accept: "application/json" }
+      });
+    } catch (err) {
+      const status = err.status;
+      throw new Error(`Attachment metadata error${status ? ` ${status}` : ""} for page ${pageId}`);
     }
     const data = response.json;
     const attachment = (_a = data.results.find((a) => a.metadata.mediaType.startsWith("image/"))) != null ? _a : data.results[0];

@@ -33,13 +33,15 @@ export class ImageDownloader {
     const authHeader = this.client.getAuthHeader();
 
     const url = `${baseUrl}/wiki/rest/api/content/${pageId}/child/attachment?expand=metadata,extensions`;
-    const response = await requestUrl({
-      url,
-      headers: { Authorization: authHeader, Accept: 'application/json' },
-    });
-
-    if (response.status >= 400) {
-      throw new Error(`Attachment metadata error ${response.status} for page ${pageId}`);
+    let response;
+    try {
+      response = await requestUrl({
+        url,
+        headers: { Authorization: authHeader, Accept: 'application/json' },
+      });
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      throw new Error(`Attachment metadata error${status ? ` ${status}` : ''} for page ${pageId}`);
     }
 
     const data = response.json as AttachmentResponse;

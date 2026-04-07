@@ -39,25 +39,30 @@ export class ConfluenceClient {
 
   private async request<T>(url: string): Promise<T> {
     console.debug(`${LOG} GET ${url}`);
-    const response = await requestUrl({
-      url,
-      headers: {
-        Authorization: this.authHeader,
-        Accept: 'application/json',
-      },
-    });
-    if (response.status >= 400) {
-      throw new Error(`Confluence API error ${response.status} — ${url}`);
+    try {
+      const response = await requestUrl({
+        url,
+        headers: {
+          Authorization: this.authHeader,
+          Accept: 'application/json',
+        },
+      });
+      return response.json as T;
+    } catch (err) {
+      // requestUrl throws on non-2xx; extract status from the error if present
+      const status = (err as { status?: number }).status;
+      throw new Error(
+        `Confluence API error${status ? ` ${status}` : ''} — ${url}`
+      );
     }
-    return response.json as T;
   }
 
   /** Verifies credentials by fetching the current user. Returns display name on success. */
   async testConnection(): Promise<string> {
-    const data = await this.request<{ displayName?: string; email?: string }>(
-      `${this.baseUrl}/wiki/rest/api/myself`
+    const data = await this.request<{ displayName?: string; publicName?: string }>(
+      `${this.baseUrl}/wiki/rest/api/user/current`
     );
-    return data.displayName ?? data.email ?? 'unknown user';
+    return data.displayName ?? data.publicName ?? 'unknown user';
   }
 
   /** Verifies that a space with the given key exists and is accessible. Returns the space name. */
@@ -138,14 +143,16 @@ export class ConfluenceClient {
 
   async fetchBinary(url: string): Promise<ArrayBuffer> {
     console.debug(`${LOG} downloading binary: ${url}`);
-    const response = await requestUrl({
-      url,
-      headers: { Authorization: this.authHeader },
-    });
-    if (response.status >= 400) {
-      throw new Error(`Binary fetch error ${response.status} — ${url}`);
+    try {
+      const response = await requestUrl({
+        url,
+        headers: { Authorization: this.authHeader },
+      });
+      return response.arrayBuffer;
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      throw new Error(`Binary fetch error${status ? ` ${status}` : ''} — ${url}`);
     }
-    return response.arrayBuffer;
   }
 
   getBaseUrl(): string {
