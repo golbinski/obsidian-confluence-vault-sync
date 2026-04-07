@@ -519,7 +519,7 @@ function buildFrontmatter(pageId, baseUrl, spaceKey, title) {
     ""
   ].join("\n");
 }
-async function runSyncForTarget(target, settings, vault) {
+async function runSyncForTarget(target, settings, vault, onProgress) {
   const { spaceKey, syncFolderPath } = target;
   const { confluenceBaseUrl, confluenceEmail, confluenceApiToken, maxImageDownloadSizeKb } = settings;
   console.log(`${LOG2} starting sync for space "${spaceKey}" \u2192 "${syncFolderPath}"`);
@@ -572,7 +572,9 @@ async function runSyncForTarget(target, settings, vault) {
     const vaultPath = pathMap.get(page.id);
     if (!vaultPath)
       continue;
-    console.log(`${LOG2} [${syncedCount + failedCount + 1}/${filteredPages.length}] "${page.title}" \u2192 ${vaultPath}`);
+    const current = syncedCount + failedCount + 1;
+    console.log(`${LOG2} [${current}/${filteredPages.length}] "${page.title}" \u2192 ${vaultPath}`);
+    onProgress == null ? void 0 : onProgress(current, filteredPages.length, page.title);
     try {
       const adf = await client.getPageBody(page.id);
       const dir = vaultPath.split("/").slice(0, -1).join("/");
@@ -648,8 +650,13 @@ async function resolveMediaNodes(adf, pageId, syncFolderPath, imageDownloader, c
 
 // main.ts
 var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
+  constructor() {
+    super(...arguments);
+    this.syncInProgress = false;
+  }
   async onload() {
     await this.loadSettings();
+    this.statusBarEl = this.addStatusBarItem();
     this.addRibbonIcon("refresh-cw", "Sync Confluence", () => {
       this.syncAll();
     });
@@ -710,17 +717,36 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
       missing.push("at least one Sync Target");
     return missing;
   }
+  setStatus(text) {
+    this.statusBarEl.setText(text);
+  }
+  clearStatus() {
+    this.statusBarEl.setText("");
+  }
   async syncAll() {
+    if (this.syncInProgress) {
+      new import_obsidian4.Notice("Confluence Vault Sync: sync already in progress");
+      return;
+    }
     const missing = this.validateSettings();
     if (missing.length > 0) {
       new import_obsidian4.Notice(`Confluence Vault Sync: missing settings \u2014 ${missing.join(", ")}`);
       return;
     }
+    this.syncInProgress = true;
     let totalPages = 0;
     const targets = this.settings.syncTargets;
     try {
       for (const target of targets) {
-        const count = await runSyncForTarget(target, this.settings, this.app.vault);
+        this.setStatus(`\u21BB Syncing ${target.spaceKey}\u2026`);
+        const count = await runSyncForTarget(
+          target,
+          this.settings,
+          this.app.vault,
+          (current, total, label) => {
+            this.setStatus(`\u21BB ${target.spaceKey} ${current}/${total} \u2014 ${label}`);
+          }
+        );
         totalPages += count;
       }
       new import_obsidian4.Notice(
@@ -729,21 +755,40 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new import_obsidian4.Notice(`Sync failed: ${message}`);
+    } finally {
+      this.syncInProgress = false;
+      this.clearStatus();
     }
   }
   async syncTarget(target) {
+    if (this.syncInProgress) {
+      new import_obsidian4.Notice("Confluence Vault Sync: sync already in progress");
+      return;
+    }
     const missing = this.validateSettings();
     const settingsOnly = missing.filter((m) => m !== "at least one Sync Target");
     if (settingsOnly.length > 0) {
       new import_obsidian4.Notice(`Confluence Vault Sync: missing settings \u2014 ${settingsOnly.join(", ")}`);
       return;
     }
+    this.syncInProgress = true;
     try {
-      const count = await runSyncForTarget(target, this.settings, this.app.vault);
+      this.setStatus(`\u21BB Syncing ${target.spaceKey}\u2026`);
+      const count = await runSyncForTarget(
+        target,
+        this.settings,
+        this.app.vault,
+        (current, total, label) => {
+          this.setStatus(`\u21BB ${target.spaceKey} ${current}/${total} \u2014 ${label}`);
+        }
+      );
       new import_obsidian4.Notice(`Sync complete \u2014 ${target.spaceKey}: ${count} pages synced`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new import_obsidian4.Notice(`Sync failed: ${message}`);
+    } finally {
+      this.syncInProgress = false;
+      this.clearStatus();
     }
   }
 };

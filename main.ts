@@ -16,9 +16,13 @@ import { runSyncForTarget } from './src/sync-engine';
 
 export default class ConfluenceVaultSyncPlugin extends Plugin {
   settings!: ConfluenceVaultSyncSettings;
+  private statusBarEl!: HTMLElement;
+  private syncInProgress = false;
 
   async onload(): Promise<void> {
     await this.loadSettings();
+
+    this.statusBarEl = this.addStatusBarItem();
 
     // Ribbon icon
     this.addRibbonIcon('refresh-cw', 'Sync Confluence', () => {
@@ -97,19 +101,41 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     return missing;
   }
 
+  private setStatus(text: string): void {
+    this.statusBarEl.setText(text);
+  }
+
+  private clearStatus(): void {
+    this.statusBarEl.setText('');
+  }
+
   async syncAll(): Promise<void> {
+    if (this.syncInProgress) {
+      new Notice('Confluence Vault Sync: sync already in progress');
+      return;
+    }
+
     const missing = this.validateSettings();
     if (missing.length > 0) {
       new Notice(`Confluence Vault Sync: missing settings — ${missing.join(', ')}`);
       return;
     }
 
+    this.syncInProgress = true;
     let totalPages = 0;
     const targets = this.settings.syncTargets;
 
     try {
       for (const target of targets) {
-        const count = await runSyncForTarget(target, this.settings, this.app.vault);
+        this.setStatus(`↻ Syncing ${target.spaceKey}…`);
+        const count = await runSyncForTarget(
+          target,
+          this.settings,
+          this.app.vault,
+          (current, total, label) => {
+            this.setStatus(`↻ ${target.spaceKey} ${current}/${total} — ${label}`);
+          }
+        );
         totalPages += count;
       }
       new Notice(
@@ -118,10 +144,18 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new Notice(`Sync failed: ${message}`);
+    } finally {
+      this.syncInProgress = false;
+      this.clearStatus();
     }
   }
 
   async syncTarget(target: SyncTarget): Promise<void> {
+    if (this.syncInProgress) {
+      new Notice('Confluence Vault Sync: sync already in progress');
+      return;
+    }
+
     const missing = this.validateSettings();
     const settingsOnly = missing.filter((m) => m !== 'at least one Sync Target');
     if (settingsOnly.length > 0) {
@@ -129,12 +163,24 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
       return;
     }
 
+    this.syncInProgress = true;
     try {
-      const count = await runSyncForTarget(target, this.settings, this.app.vault);
+      this.setStatus(`↻ Syncing ${target.spaceKey}…`);
+      const count = await runSyncForTarget(
+        target,
+        this.settings,
+        this.app.vault,
+        (current, total, label) => {
+          this.setStatus(`↻ ${target.spaceKey} ${current}/${total} — ${label}`);
+        }
+      );
       new Notice(`Sync complete — ${target.spaceKey}: ${count} pages synced`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new Notice(`Sync failed: ${message}`);
+    } finally {
+      this.syncInProgress = false;
+      this.clearStatus();
     }
   }
 }

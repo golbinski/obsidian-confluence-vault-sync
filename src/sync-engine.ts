@@ -158,7 +158,8 @@ function buildFrontmatter(
 export async function runSyncForTarget(
   target: SyncTarget,
   settings: ConfluenceVaultSyncSettings,
-  vault: Vault
+  vault: Vault,
+  onProgress?: (current: number, total: number, label: string) => void
 ): Promise<number> {
   const { spaceKey, syncFolderPath } = target;
   const { confluenceBaseUrl, confluenceEmail, confluenceApiToken, maxImageDownloadSizeKb } =
@@ -233,7 +234,9 @@ export async function runSyncForTarget(
     const vaultPath = pathMap.get(page.id);
     if (!vaultPath) continue;
 
-    console.log(`${LOG} [${syncedCount + failedCount + 1}/${filteredPages.length}] "${page.title}" → ${vaultPath}`);
+    const current = syncedCount + failedCount + 1;
+    console.log(`${LOG} [${current}/${filteredPages.length}] "${page.title}" → ${vaultPath}`);
+    onProgress?.(current, filteredPages.length, page.title);
 
     try {
       const adf = await client.getPageBody(page.id);
