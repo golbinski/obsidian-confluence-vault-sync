@@ -24,6 +24,8 @@ export interface AdfMark {
   attrs?: Record<string, unknown>;
 }
 
+const LOG = '[Confluence Vault Sync]';
+
 export class ConfluenceClient {
   private readonly baseUrl: string;
   private readonly authHeader: string;
@@ -34,6 +36,7 @@ export class ConfluenceClient {
   }
 
   private async request<T>(url: string): Promise<T> {
+    console.debug(`${LOG} GET ${url}`);
     const response = await fetch(url, {
       headers: {
         Authorization: this.authHeader,
@@ -41,9 +44,28 @@ export class ConfluenceClient {
       },
     });
     if (!response.ok) {
-      throw new Error(`Confluence API error ${response.status} ${response.statusText} for ${url}`);
+      throw new Error(`Confluence API error ${response.status} ${response.statusText} — ${url}`);
     }
     return response.json() as Promise<T>;
+  }
+
+  /** Verifies credentials by fetching the current user. Returns display name on success. */
+  async testConnection(): Promise<string> {
+    const data = await this.request<{ displayName?: string; email?: string }>(
+      `${this.baseUrl}/wiki/rest/api/myself`
+    );
+    return data.displayName ?? data.email ?? 'unknown user';
+  }
+
+  /** Verifies that a space with the given key exists and is accessible. Returns the space name. */
+  async checkSpaceAccess(spaceKey: string): Promise<string> {
+    const data = await this.request<{ results: Array<{ name: string }> }>(
+      `${this.baseUrl}/wiki/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`
+    );
+    if (!data.results.length) {
+      throw new Error(`Space "${spaceKey}" not found or not accessible`);
+    }
+    return data.results[0].name;
   }
 
   async getSpacePages(spaceKey: string): Promise<ConfluencePage[]> {
@@ -52,11 +74,13 @@ export class ConfluenceClient {
       _links?: { next?: string };
     };
     const pages: ConfluencePage[] = [];
+    // The v2 API uses "space-key" (hyphenated), not "spaceKey"
     let url: string | null =
-      `${this.baseUrl}/wiki/api/v2/pages?spaceKey=${encodeURIComponent(spaceKey)}&limit=250`;
+      `${this.baseUrl}/wiki/api/v2/pages?space-key=${encodeURIComponent(spaceKey)}&limit=250`;
 
     while (url) {
       const data: SpacePagesResponse = await this.request<SpacePagesResponse>(url);
+      console.debug(`${LOG} fetched ${data.results.length} pages (total so far: ${pages.length + data.results.length})`);
 
       for (const page of data.results) {
         pages.push({
@@ -67,10 +91,12 @@ export class ConfluenceClient {
         });
       }
 
+      // _links.next is already a full path like /wiki/api/v2/pages?cursor=...
       const next: string | undefined = data._links?.next;
-      url = next ? `${this.baseUrl}/wiki${next}` : null;
+      url = next ? `${this.baseUrl}${next}` : null;
     }
 
+    console.log(`${LOG} fetched ${pages.length} pages total for space "${spaceKey}"`);
     return pages;
   }
 
@@ -103,18 +129,19 @@ export class ConfluenceClient {
       }
 
       const next: string | undefined = data._links?.next;
-      url = next ? `${this.baseUrl}/wiki${next}` : null;
+      url = next ? `${this.baseUrl}${next}` : null;
     }
 
     return children;
   }
 
   async fetchBinary(url: string): Promise<ArrayBuffer> {
+    console.debug(`${LOG} downloading binary: ${url}`);
     const response = await fetch(url, {
       headers: { Authorization: this.authHeader },
     });
     if (!response.ok) {
-      throw new Error(`Binary fetch error ${response.status} for ${url}`);
+      throw new Error(`Binary fetch error ${response.status} — ${url}`);
     }
     return response.arrayBuffer();
   }

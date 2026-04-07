@@ -5,6 +5,9 @@ var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
 var __getOwnPropNames = Object.getOwnPropertyNames;
 var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
+var __esm = (fn, res) => function __init() {
+  return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+};
 var __export = (target, all) => {
   for (var name in all)
     __defProp(target, name, { get: all[name], enumerable: true });
@@ -27,6 +30,116 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
+// src/confluence-client.ts
+var confluence_client_exports = {};
+__export(confluence_client_exports, {
+  ConfluenceClient: () => ConfluenceClient
+});
+var LOG, ConfluenceClient;
+var init_confluence_client = __esm({
+  "src/confluence-client.ts"() {
+    "use strict";
+    LOG = "[Confluence Vault Sync]";
+    ConfluenceClient = class {
+      constructor(baseUrl, email, apiToken) {
+        this.baseUrl = baseUrl.replace(/\/$/, "");
+        this.authHeader = "Basic " + btoa(`${email}:${apiToken}`);
+      }
+      async request(url) {
+        console.debug(`${LOG} GET ${url}`);
+        const response = await fetch(url, {
+          headers: {
+            Authorization: this.authHeader,
+            Accept: "application/json"
+          }
+        });
+        if (!response.ok) {
+          throw new Error(`Confluence API error ${response.status} ${response.statusText} \u2014 ${url}`);
+        }
+        return response.json();
+      }
+      /** Verifies credentials by fetching the current user. Returns display name on success. */
+      async testConnection() {
+        var _a, _b;
+        const data = await this.request(
+          `${this.baseUrl}/wiki/rest/api/myself`
+        );
+        return (_b = (_a = data.displayName) != null ? _a : data.email) != null ? _b : "unknown user";
+      }
+      /** Verifies that a space with the given key exists and is accessible. Returns the space name. */
+      async checkSpaceAccess(spaceKey) {
+        const data = await this.request(
+          `${this.baseUrl}/wiki/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`
+        );
+        if (!data.results.length) {
+          throw new Error(`Space "${spaceKey}" not found or not accessible`);
+        }
+        return data.results[0].name;
+      }
+      async getSpacePages(spaceKey) {
+        var _a, _b;
+        const pages = [];
+        let url = `${this.baseUrl}/wiki/api/v2/pages?space-key=${encodeURIComponent(spaceKey)}&limit=250`;
+        while (url) {
+          const data = await this.request(url);
+          console.debug(`${LOG} fetched ${data.results.length} pages (total so far: ${pages.length + data.results.length})`);
+          for (const page of data.results) {
+            pages.push({
+              id: page.id,
+              title: page.title,
+              parentId: (_a = page.parentId) != null ? _a : null,
+              spaceKey
+            });
+          }
+          const next = (_b = data._links) == null ? void 0 : _b.next;
+          url = next ? `${this.baseUrl}${next}` : null;
+        }
+        console.log(`${LOG} fetched ${pages.length} pages total for space "${spaceKey}"`);
+        return pages;
+      }
+      async getPageBody(pageId) {
+        const data = await this.request(`${this.baseUrl}/wiki/api/v2/pages/${pageId}?body-format=atlas_doc_format`);
+        return JSON.parse(data.body.atlas_doc_format.value);
+      }
+      async getPageChildren(pageId) {
+        var _a, _b, _c;
+        const children = [];
+        let url = `${this.baseUrl}/wiki/api/v2/pages/${pageId}/children?limit=250`;
+        while (url) {
+          const data = await this.request(url);
+          for (const page of data.results) {
+            children.push({
+              id: page.id,
+              title: page.title,
+              parentId: (_a = page.parentId) != null ? _a : pageId,
+              spaceKey: (_b = page.spaceKey) != null ? _b : ""
+            });
+          }
+          const next = (_c = data._links) == null ? void 0 : _c.next;
+          url = next ? `${this.baseUrl}${next}` : null;
+        }
+        return children;
+      }
+      async fetchBinary(url) {
+        console.debug(`${LOG} downloading binary: ${url}`);
+        const response = await fetch(url, {
+          headers: { Authorization: this.authHeader }
+        });
+        if (!response.ok) {
+          throw new Error(`Binary fetch error ${response.status} \u2014 ${url}`);
+        }
+        return response.arrayBuffer();
+      }
+      getBaseUrl() {
+        return this.baseUrl;
+      }
+      getAuthHeader() {
+        return this.authHeader;
+      }
+    };
+  }
+});
+
 // main.ts
 var main_exports = {};
 __export(main_exports, {
@@ -46,83 +159,7 @@ var DEFAULT_SETTINGS = {
 
 // src/sync-engine.ts
 var import_obsidian = require("obsidian");
-
-// src/confluence-client.ts
-var ConfluenceClient = class {
-  constructor(baseUrl, email, apiToken) {
-    this.baseUrl = baseUrl.replace(/\/$/, "");
-    this.authHeader = "Basic " + btoa(`${email}:${apiToken}`);
-  }
-  async request(url) {
-    const response = await fetch(url, {
-      headers: {
-        Authorization: this.authHeader,
-        Accept: "application/json"
-      }
-    });
-    if (!response.ok) {
-      throw new Error(`Confluence API error ${response.status} ${response.statusText} for ${url}`);
-    }
-    return response.json();
-  }
-  async getSpacePages(spaceKey) {
-    var _a, _b;
-    const pages = [];
-    let url = `${this.baseUrl}/wiki/api/v2/pages?spaceKey=${encodeURIComponent(spaceKey)}&limit=250`;
-    while (url) {
-      const data = await this.request(url);
-      for (const page of data.results) {
-        pages.push({
-          id: page.id,
-          title: page.title,
-          parentId: (_a = page.parentId) != null ? _a : null,
-          spaceKey
-        });
-      }
-      const next = (_b = data._links) == null ? void 0 : _b.next;
-      url = next ? `${this.baseUrl}/wiki${next}` : null;
-    }
-    return pages;
-  }
-  async getPageBody(pageId) {
-    const data = await this.request(`${this.baseUrl}/wiki/api/v2/pages/${pageId}?body-format=atlas_doc_format`);
-    return JSON.parse(data.body.atlas_doc_format.value);
-  }
-  async getPageChildren(pageId) {
-    var _a, _b, _c;
-    const children = [];
-    let url = `${this.baseUrl}/wiki/api/v2/pages/${pageId}/children?limit=250`;
-    while (url) {
-      const data = await this.request(url);
-      for (const page of data.results) {
-        children.push({
-          id: page.id,
-          title: page.title,
-          parentId: (_a = page.parentId) != null ? _a : pageId,
-          spaceKey: (_b = page.spaceKey) != null ? _b : ""
-        });
-      }
-      const next = (_c = data._links) == null ? void 0 : _c.next;
-      url = next ? `${this.baseUrl}/wiki${next}` : null;
-    }
-    return children;
-  }
-  async fetchBinary(url) {
-    const response = await fetch(url, {
-      headers: { Authorization: this.authHeader }
-    });
-    if (!response.ok) {
-      throw new Error(`Binary fetch error ${response.status} for ${url}`);
-    }
-    return response.arrayBuffer();
-  }
-  getBaseUrl() {
-    return this.baseUrl;
-  }
-  getAuthHeader() {
-    return this.authHeader;
-  }
-};
+init_confluence_client();
 
 // src/adf-converter.ts
 var AdfConverter = class {
@@ -353,6 +390,7 @@ var ImageDownloader = class {
 
 // src/sync-engine.ts
 var fs = __toESM(require("fs"));
+var LOG2 = "[Confluence Vault Sync]";
 function sanitizeTitle(title) {
   return title.replace(/[/:?*|\\<>"]/g, "-");
 }
@@ -386,6 +424,15 @@ function computePaths(nodes, parentPath, pathMap) {
     }
   }
 }
+function getFullPath(vault, relativePath) {
+  return vault.adapter.getFullPath(relativePath);
+}
+function makeWritable(vault, relativePath) {
+  try {
+    fs.chmodSync(getFullPath(vault, relativePath), 420);
+  } catch (e) {
+  }
+}
 async function removeRecursive(vault, path) {
   try {
     const stat = await vault.adapter.stat(path);
@@ -394,42 +441,29 @@ async function removeRecursive(vault, path) {
     if (stat.type === "folder") {
       const listed = await vault.adapter.list(path);
       for (const file of listed.files) {
-        try {
-          const abs = vault.adapter.getFullPath(file);
-          fs.chmodSync(abs, 420);
-        } catch (e) {
-        }
+        makeWritable(vault, file);
         await vault.adapter.remove(file);
       }
       for (const folder of listed.folders) {
         await removeRecursive(vault, folder);
       }
-      if (path !== path) {
-        try {
-          await vault.adapter.rmdir(path, true);
-        } catch (e) {
-        }
-      }
-    } else {
       try {
-        const abs = vault.adapter.getFullPath(path);
-        fs.chmodSync(abs, 420);
+        await vault.adapter.rmdir(path, true);
       } catch (e) {
       }
+    } else {
+      makeWritable(vault, path);
       await vault.adapter.remove(path);
     }
   } catch (e) {
   }
 }
 async function wipeSyncFolder(vault, syncFolderPath) {
+  console.log(`${LOG2} wiping sync folder: ${syncFolderPath}`);
   try {
     const listed = await vault.adapter.list(syncFolderPath);
     for (const file of listed.files) {
-      try {
-        const abs = vault.adapter.getFullPath(file);
-        fs.chmodSync(abs, 420);
-      } catch (e) {
-      }
+      makeWritable(vault, file);
       await vault.adapter.remove(file);
     }
     for (const folder of listed.folders) {
@@ -447,11 +481,7 @@ async function wipeAttachmentsFolder(vault, attachmentsPath) {
   try {
     const listed = await vault.adapter.list(attachmentsPath);
     for (const file of listed.files) {
-      try {
-        const abs = vault.adapter.getFullPath(file);
-        fs.chmodSync(abs, 420);
-      } catch (e) {
-      }
+      makeWritable(vault, file);
       await vault.adapter.remove(file);
     }
   } catch (e) {
@@ -475,10 +505,14 @@ function buildFrontmatter(pageId, baseUrl, spaceKey, title) {
 async function runSyncForTarget(target, settings, vault) {
   const { spaceKey, syncFolderPath } = target;
   const { confluenceBaseUrl, confluenceEmail, confluenceApiToken, maxImageDownloadSizeKb } = settings;
+  console.log(`${LOG2} starting sync for space "${spaceKey}" \u2192 "${syncFolderPath}"`);
   new import_obsidian.Notice(`Syncing ${spaceKey}\u2026`);
   const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
   const imageDownloader = new ImageDownloader(client, vault, maxImageDownloadSizeKb);
+  console.log(`${LOG2} fetching page list\u2026`);
   const pages = await client.getSpacePages(spaceKey);
+  console.log(`${LOG2} ${pages.length} pages to sync`);
+  new import_obsidian.Notice(`${spaceKey}: ${pages.length} pages found, writing\u2026`);
   const tree = buildTree(pages);
   const pathMap = /* @__PURE__ */ new Map();
   computePaths(tree, syncFolderPath, pathMap);
@@ -489,10 +523,12 @@ async function runSyncForTarget(target, settings, vault) {
   }
   const converter = new AdfConverter(pathMap, confluenceBaseUrl);
   let syncedCount = 0;
+  let failedCount = 0;
   for (const page of pages) {
     const vaultPath = pathMap.get(page.id);
     if (!vaultPath)
       continue;
+    console.log(`${LOG2} [${syncedCount + failedCount + 1}/${pages.length}] "${page.title}" \u2192 ${vaultPath}`);
     try {
       const adf = await client.getPageBody(page.id);
       const dir = vaultPath.split("/").slice(0, -1).join("/");
@@ -502,19 +538,28 @@ async function runSyncForTarget(target, settings, vault) {
         } catch (e) {
         }
       }
-      const markdown = await resolveMediaNodes(adf, page.id, syncFolderPath, imageDownloader, converter);
-      const frontmatter = buildFrontmatter(page.id, confluenceBaseUrl, spaceKey, page.title);
-      const content = frontmatter + markdown;
+      const markdown = await resolveMediaNodes(
+        adf,
+        page.id,
+        syncFolderPath,
+        imageDownloader,
+        converter
+      );
+      const content = buildFrontmatter(page.id, confluenceBaseUrl, spaceKey, page.title) + markdown;
       await vault.adapter.write(vaultPath, content);
       try {
-        const abs = vault.adapter.getFullPath(vaultPath);
-        fs.chmodSync(abs, 292);
+        fs.chmodSync(getFullPath(vault, vaultPath), 292);
       } catch (e) {
       }
       syncedCount++;
     } catch (err) {
-      console.warn(`[Confluence Vault Sync] Failed to sync page ${page.id} "${page.title}":`, err);
+      failedCount++;
+      console.warn(`${LOG2} failed to sync page ${page.id} "${page.title}":`, err);
     }
+  }
+  console.log(`${LOG2} done \u2014 ${syncedCount} synced, ${failedCount} failed`);
+  if (failedCount > 0) {
+    console.warn(`${LOG2} ${failedCount} page(s) failed \u2014 check console for details`);
   }
   return syncedCount;
 }
@@ -529,8 +574,8 @@ async function resolveMediaNodes(adf, pageId, syncFolderPath, imageDownloader, c
           const result = await imageDownloader.handleMedia(pageId, mediaId, syncFolderPath);
           mediaReplacements.set(mediaId, result);
         } catch (err) {
-          console.warn(`[Confluence Vault Sync] Failed to download media ${mediaId}:`, err);
-          mediaReplacements.set(mediaId, `[attachment unavailable]`);
+          console.warn(`${LOG2} failed to download media ${mediaId}:`, err);
+          mediaReplacements.set(mediaId, "[attachment unavailable]");
         }
       }
     }
@@ -695,6 +740,40 @@ var ConfluenceVaultSyncSettingTab = class extends import_obsidian2.PluginSetting
         }
       })
     );
+    let testBtn;
+    new import_obsidian2.Setting(containerEl).setName("Test connection").setDesc("Verify credentials and check access to each configured space").addButton((btn) => {
+      testBtn = btn;
+      btn.setButtonText("Test").onClick(async () => {
+        const { confluenceBaseUrl, confluenceEmail, confluenceApiToken, syncTargets } = this.plugin.settings;
+        if (!confluenceBaseUrl || !confluenceEmail || !confluenceApiToken) {
+          new import_obsidian2.Notice("Fill in Base URL, Email, and API Token first.");
+          return;
+        }
+        testBtn.setButtonText("Testing\u2026").setDisabled(true);
+        try {
+          const { ConfluenceClient: ConfluenceClient2 } = await Promise.resolve().then(() => (init_confluence_client(), confluence_client_exports));
+          const client = new ConfluenceClient2(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
+          const displayName = await client.testConnection();
+          new import_obsidian2.Notice(`Connected as ${displayName}`);
+          for (const target of syncTargets) {
+            if (!target.spaceKey)
+              continue;
+            try {
+              const spaceName = await client.checkSpaceAccess(target.spaceKey);
+              new import_obsidian2.Notice(`Space "${target.spaceKey}": OK (${spaceName})`);
+            } catch (err) {
+              const msg = err instanceof Error ? err.message : String(err);
+              new import_obsidian2.Notice(`Space "${target.spaceKey}": ${msg}`, 8e3);
+            }
+          }
+        } catch (err) {
+          const msg = err instanceof Error ? err.message : String(err);
+          new import_obsidian2.Notice(`Connection failed: ${msg}`, 8e3);
+        } finally {
+          testBtn.setButtonText("Test").setDisabled(false);
+        }
+      });
+    });
     containerEl.createEl("h3", { text: "Sync Targets" });
     const tableContainer = containerEl.createDiv();
     this.renderSyncTargetsTable(tableContainer);

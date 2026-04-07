@@ -1,5 +1,6 @@
 import {
   App,
+  ButtonComponent,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -207,6 +208,50 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
             }
           })
       );
+
+    // Test connection
+    let testBtn: ButtonComponent;
+    new Setting(containerEl)
+      .setName('Test connection')
+      .setDesc('Verify credentials and check access to each configured space')
+      .addButton((btn) => {
+        testBtn = btn;
+        btn.setButtonText('Test').onClick(async () => {
+          const { confluenceBaseUrl, confluenceEmail, confluenceApiToken, syncTargets } =
+            this.plugin.settings;
+
+          if (!confluenceBaseUrl || !confluenceEmail || !confluenceApiToken) {
+            new Notice('Fill in Base URL, Email, and API Token first.');
+            return;
+          }
+
+          testBtn.setButtonText('Testing…').setDisabled(true);
+
+          try {
+            const { ConfluenceClient } = await import('./src/confluence-client');
+            const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
+
+            const displayName = await client.testConnection();
+            new Notice(`Connected as ${displayName}`);
+
+            for (const target of syncTargets) {
+              if (!target.spaceKey) continue;
+              try {
+                const spaceName = await client.checkSpaceAccess(target.spaceKey);
+                new Notice(`Space "${target.spaceKey}": OK (${spaceName})`);
+              } catch (err) {
+                const msg = err instanceof Error ? err.message : String(err);
+                new Notice(`Space "${target.spaceKey}": ${msg}`, 8000);
+              }
+            }
+          } catch (err) {
+            const msg = err instanceof Error ? err.message : String(err);
+            new Notice(`Connection failed: ${msg}`, 8000);
+          } finally {
+            testBtn.setButtonText('Test').setDisabled(false);
+          }
+        });
+      });
 
     // Sync targets section
     containerEl.createEl('h3', { text: 'Sync Targets' });
