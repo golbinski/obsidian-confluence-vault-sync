@@ -21,7 +21,6 @@ function buildTree(pages: ConfluencePage[]): PageNode[] {
   for (const page of pages) {
     nodeMap.set(page.id, { page, children: [] });
   }
-
   const roots: PageNode[] = [];
   for (const page of pages) {
     const node = nodeMap.get(page.id)!;
@@ -31,7 +30,6 @@ function buildTree(pages: ConfluencePage[]): PageNode[] {
       roots.push(node);
     }
   }
-
   return roots;
 }
 
@@ -44,14 +42,21 @@ function computePaths(
     const sanitized = sanitizeTitle(node.page.title);
     if (node.children.length > 0) {
       const folderPath = `${parentPath}/${sanitized}`;
-      const filePath = `${folderPath}/index.md`;
-      pathMap.set(node.page.id, filePath);
+      pathMap.set(node.page.id, `${folderPath}/index.md`);
       computePaths(node.children, folderPath, pathMap);
     } else {
-      const filePath = `${parentPath}/${sanitized}.md`;
-      pathMap.set(node.page.id, filePath);
+      pathMap.set(node.page.id, `${parentPath}/${sanitized}.md`);
     }
   }
+}
+
+function flattenTree(nodes: PageNode[]): ConfluencePage[] {
+  const result: ConfluencePage[] = [];
+  for (const node of nodes) {
+    result.push(node.page);
+    result.push(...flattenTree(node.children));
+  }
+  return result;
 }
 
 type VaultAdapter = {
@@ -66,72 +71,98 @@ function getFullPath(vault: Vault, relativePath: string): string {
 function makeWritable(vault: Vault, relativePath: string): void {
   try {
     fs.chmodSync(getFullPath(vault, relativePath), 0o644);
-  } catch {
-    // Best effort — file may not exist yet
-  }
+  } catch { /* best effort */ }
 }
 
-async function removeRecursive(vault: Vault, path: string): Promise<void> {
+function makeReadOnly(vault: Vault, relativePath: string): void {
   try {
-    const stat = await vault.adapter.stat(path);
-    if (!stat) return;
+    fs.chmodSync(getFullPath(vault, relativePath), 0o444);
+  } catch { /* best effort */ }
+}
 
-    if (stat.type === 'folder') {
-      const listed = await vault.adapter.list(path);
-      for (const file of listed.files) {
+/** Scan all .md files under a vault path and return a map of pageId → {path, lastSynced}. */
+async function scanExistingFiles(
+  vault: Vault,
+  dirPath: string
+): Promise<Map<string, { path: string; lastSynced: string }>> {
+  const result = new Map<string, { path: string; lastSynced: string }>();
+
+  async function scanDir(dir: string): Promise<void> {
+    let listed;
+    try {
+      listed = await vault.adapter.list(dir);
+    } catch {
+      return; // dir doesn't exist yet
+    }
+    for (const file of listed.files) {
+      if (!file.endsWith('.md')) continue;
+      try {
+        const content = await vault.adapter.read(file);
+        const pageId = extractFrontmatterField(content, 'confluence-id');
+        const lastSynced = extractFrontmatterField(content, 'last-synced');
+        if (pageId && lastSynced) {
+          result.set(pageId, { path: file, lastSynced });
+        }
+      } catch { /* skip unreadable files */ }
+    }
+    for (const folder of listed.folders) {
+      await scanDir(folder);
+    }
+  }
+
+  await scanDir(dirPath);
+  return result;
+}
+
+function extractFrontmatterField(content: string, field: string): string | null {
+  const match = content.match(new RegExp(`^${field}: "([^"]+)"`, 'm'));
+  return match?.[1] ?? null;
+}
+
+/** Remove .md files that are no longer in the expected path set, then prune empty folders. */
+async function removeOrphanedFiles(
+  vault: Vault,
+  syncFolderPath: string,
+  expectedPaths: Set<string>
+): Promise<void> {
+  async function cleanDir(dir: string): Promise<boolean> {
+    let listed;
+    try {
+      listed = await vault.adapter.list(dir);
+    } catch {
+      return true; // doesn't exist, treat as empty
+    }
+
+    for (const file of listed.files) {
+      if (file.endsWith('.md') && !expectedPaths.has(file)) {
+        console.log(`${LOG} removing orphaned file: ${file}`);
         makeWritable(vault, file);
         await vault.adapter.remove(file);
       }
-      for (const folder of listed.folders) {
-        await removeRecursive(vault, folder);
-      }
-      try {
-        await (vault.adapter as unknown as VaultAdapter).rmdir(path, true);
-      } catch {
-        // Ignore
-      }
-    } else {
-      makeWritable(vault, path);
-      await vault.adapter.remove(path);
-    }
-  } catch {
-    // Path doesn't exist
-  }
-}
-
-async function wipeSyncFolder(vault: Vault, syncFolderPath: string): Promise<void> {
-  console.log(`${LOG} wiping sync folder: ${syncFolderPath}`);
-  try {
-    const listed = await vault.adapter.list(syncFolderPath);
-
-    for (const file of listed.files) {
-      makeWritable(vault, file);
-      await vault.adapter.remove(file);
     }
 
+    let allChildrenGone = true;
     for (const folder of listed.folders) {
-      const name = folder.split('/').pop();
-      if (name === 'attachments') {
-        await wipeAttachmentsFolder(vault, folder);
+      const isEmpty = await cleanDir(folder);
+      if (isEmpty && folder !== `${syncFolderPath}/attachments`) {
+        try {
+          await (vault.adapter as unknown as VaultAdapter).rmdir(folder, true);
+        } catch { /* ignore */ }
       } else {
-        await removeRecursive(vault, folder);
+        allChildrenGone = false;
       }
     }
-  } catch {
-    // Folder doesn't exist yet — that's fine
-  }
-}
 
-async function wipeAttachmentsFolder(vault: Vault, attachmentsPath: string): Promise<void> {
-  try {
-    const listed = await vault.adapter.list(attachmentsPath);
-    for (const file of listed.files) {
-      makeWritable(vault, file);
-      await vault.adapter.remove(file);
+    // Re-check after deletions
+    try {
+      const recheck = await vault.adapter.list(dir);
+      return recheck.files.length === 0 && recheck.folders.length === 0;
+    } catch {
+      return true;
     }
-  } catch {
-    // Folder doesn't exist
   }
+
+  await cleanDir(syncFolderPath);
 }
 
 function buildFrontmatter(
@@ -171,7 +202,7 @@ export async function runSyncForTarget(
   const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
   const imageDownloader = new ImageDownloader(client, vault, maxImageDownloadSizeKb);
 
-  // 1. Fetch all pages and the space home page ID
+  // 1. Fetch pages (with version dates) and home page ID in parallel
   console.log(`${LOG} fetching page list…`);
   const [pages, homePageId] = await Promise.all([
     client.getSpacePages(spaceKey),
@@ -179,11 +210,8 @@ export async function runSyncForTarget(
   ]);
   console.log(`${LOG} ${pages.length} pages fetched, home page ID: ${homePageId ?? 'unknown'}`);
 
-  // 2. Build tree and compute paths
+  // 2. Build tree rooted at space home page
   const fullTree = buildTree(pages);
-
-  // If we know the home page, restrict to just that subtree so user profile
-  // pages and other disconnected sections are excluded
   let tree = fullTree;
   if (homePageId) {
     const homeRoot = fullTree.find((n) => n.page.id === homePageId);
@@ -191,54 +219,60 @@ export async function runSyncForTarget(
       tree = [homeRoot];
       console.log(`${LOG} rooted tree at home page "${homeRoot.page.title}"`);
     } else {
-      console.warn(`${LOG} home page ${homePageId} not found in page list — syncing all roots`);
+      console.warn(`${LOG} home page ${homePageId} not found — syncing all roots`);
     }
   }
 
-  // Count pages actually in the filtered tree
-  function countNodes(nodes: PageNode[]): number {
-    return nodes.reduce((n, node) => n + 1 + countNodes(node.children), 0);
-  }
-  const pageCount = countNodes(tree);
-  console.log(`${LOG} ${pageCount} pages to sync`);
-  new Notice(`${spaceKey}: ${pageCount} pages found, writing…`);
+  // 3. Compute vault paths and flatten to ordered list
   const pathMap = new Map<string, string>();
   computePaths(tree, syncFolderPath, pathMap);
-
-  // 3. Wipe sync folder
-  await wipeSyncFolder(vault, syncFolderPath);
-
-  try {
-    await vault.adapter.mkdir(syncFolderPath);
-  } catch {
-    // Already exists
-  }
-
-  // Flatten the filtered tree back to a list for iteration
-  function flattenTree(nodes: PageNode[]): ConfluencePage[] {
-    const result: ConfluencePage[] = [];
-    for (const node of nodes) {
-      result.push(node.page);
-      result.push(...flattenTree(node.children));
-    }
-    return result;
-  }
   const filteredPages = flattenTree(tree);
+  const expectedPaths = new Set(pathMap.values());
+
+  // 4. Scan existing files to find what's already synced and up-to-date
+  const existingFiles = await scanExistingFiles(vault, syncFolderPath);
+  console.log(`${LOG} ${existingFiles.size} existing synced files found`);
+
+  // 5. Ensure sync folder exists
+  try { await vault.adapter.mkdir(syncFolderPath); } catch { /* exists */ }
 
   const converter = new AdfConverter(pathMap, confluenceBaseUrl);
   let syncedCount = 0;
+  let skippedCount = 0;
   let failedCount = 0;
 
-  // 4. Sync each page
-  for (const page of filteredPages) {
+  new Notice(`${spaceKey}: ${filteredPages.length} pages found, syncing…`);
+
+  // 6. Sync each page
+  for (let i = 0; i < filteredPages.length; i++) {
+    const page = filteredPages[i];
     const vaultPath = pathMap.get(page.id);
     if (!vaultPath) continue;
 
-    const current = syncedCount + failedCount + 1;
-    console.log(`${LOG} [${current}/${filteredPages.length}] "${page.title}" → ${vaultPath}`);
-    onProgress?.(current, filteredPages.length, page.title);
+    onProgress?.(i + 1, filteredPages.length, page.title);
+
+    const existing = existingFiles.get(page.id);
+    const isUpToDate =
+      existing &&
+      existing.path === vaultPath &&
+      new Date(existing.lastSynced).getTime() >= new Date(page.versionDate).getTime();
+
+    if (isUpToDate) {
+      skippedCount++;
+      console.debug(`${LOG} [${i + 1}/${filteredPages.length}] skipping unchanged "${page.title}"`);
+      continue;
+    }
+
+    console.log(`${LOG} [${i + 1}/${filteredPages.length}] writing "${page.title}" → ${vaultPath}`);
 
     try {
+      // If the page moved to a new path, remove the old file
+      if (existing && existing.path !== vaultPath) {
+        console.log(`${LOG} page "${page.title}" moved: ${existing.path} → ${vaultPath}`);
+        makeWritable(vault, existing.path);
+        await vault.adapter.remove(existing.path);
+      }
+
       const adf = await client.getPageBody(page.id);
 
       const dir = vaultPath.split('/').slice(0, -1).join('/');
@@ -251,13 +285,11 @@ export async function runSyncForTarget(
       );
 
       const content = buildFrontmatter(page.id, confluenceBaseUrl, spaceKey, page.title) + markdown;
-      await vault.adapter.write(vaultPath, content);
 
-      try {
-        fs.chmodSync(getFullPath(vault, vaultPath), 0o444);
-      } catch {
-        // Best effort
-      }
+      // Make writable before overwriting if the file already exists
+      if (existing) makeWritable(vault, vaultPath);
+      await vault.adapter.write(vaultPath, content);
+      makeReadOnly(vault, vaultPath);
 
       syncedCount++;
     } catch (err) {
@@ -266,12 +298,14 @@ export async function runSyncForTarget(
     }
   }
 
-  console.log(`${LOG} done — ${syncedCount} synced, ${failedCount} failed`);
-  if (failedCount > 0) {
-    console.warn(`${LOG} ${failedCount} page(s) failed — check console for details`);
-  }
+  // 7. Remove files for pages deleted from Confluence
+  await removeOrphanedFiles(vault, syncFolderPath, expectedPaths);
 
-  return syncedCount;
+  console.log(
+    `${LOG} done — ${syncedCount} updated, ${skippedCount} skipped (unchanged), ${failedCount} failed`
+  );
+
+  return syncedCount + skippedCount;
 }
 
 async function resolveMediaNodes(

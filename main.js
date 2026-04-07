@@ -89,7 +89,7 @@ var init_confluence_client = __esm({
         return (_b = (_a = data.results[0]) == null ? void 0 : _a.homepageId) != null ? _b : null;
       }
       async getSpacePages(spaceKey) {
-        var _a, _b;
+        var _a, _b, _c, _d;
         const pages = [];
         let url = `${this.baseUrl}/wiki/api/v2/pages?space-key=${encodeURIComponent(spaceKey)}&limit=250`;
         while (url) {
@@ -100,10 +100,11 @@ var init_confluence_client = __esm({
               id: page.id,
               title: page.title,
               parentId: (_a = page.parentId) != null ? _a : null,
-              spaceKey
+              spaceKey,
+              versionDate: (_c = (_b = page.version) == null ? void 0 : _b.createdAt) != null ? _c : (/* @__PURE__ */ new Date(0)).toISOString()
             });
           }
-          const next = (_b = data._links) == null ? void 0 : _b.next;
+          const next = (_d = data._links) == null ? void 0 : _d.next;
           url = next ? `${this.baseUrl}${next}` : null;
         }
         console.log(`${LOG} fetched ${pages.length} pages total for space "${spaceKey}"`);
@@ -114,7 +115,7 @@ var init_confluence_client = __esm({
         return JSON.parse(data.body.atlas_doc_format.value);
       }
       async getPageChildren(pageId) {
-        var _a, _b, _c;
+        var _a, _b, _c, _d, _e;
         const children = [];
         let url = `${this.baseUrl}/wiki/api/v2/pages/${pageId}/children?limit=250`;
         while (url) {
@@ -124,10 +125,11 @@ var init_confluence_client = __esm({
               id: page.id,
               title: page.title,
               parentId: (_a = page.parentId) != null ? _a : pageId,
-              spaceKey: (_b = page.spaceKey) != null ? _b : ""
+              spaceKey: (_b = page.spaceKey) != null ? _b : "",
+              versionDate: (_d = (_c = page.version) == null ? void 0 : _c.createdAt) != null ? _d : (/* @__PURE__ */ new Date(0)).toISOString()
             });
           }
-          const next = (_c = data._links) == null ? void 0 : _c.next;
+          const next = (_e = data._links) == null ? void 0 : _e.next;
           url = next ? `${this.baseUrl}${next}` : null;
         }
         return children;
@@ -432,14 +434,20 @@ function computePaths(nodes, parentPath, pathMap) {
     const sanitized = sanitizeTitle(node.page.title);
     if (node.children.length > 0) {
       const folderPath = `${parentPath}/${sanitized}`;
-      const filePath = `${folderPath}/index.md`;
-      pathMap.set(node.page.id, filePath);
+      pathMap.set(node.page.id, `${folderPath}/index.md`);
       computePaths(node.children, folderPath, pathMap);
     } else {
-      const filePath = `${parentPath}/${sanitized}.md`;
-      pathMap.set(node.page.id, filePath);
+      pathMap.set(node.page.id, `${parentPath}/${sanitized}.md`);
     }
   }
+}
+function flattenTree(nodes) {
+  const result = [];
+  for (const node of nodes) {
+    result.push(node.page);
+    result.push(...flattenTree(node.children));
+  }
+  return result;
 }
 function getFullPath(vault, relativePath) {
   return vault.adapter.getFullPath(relativePath);
@@ -450,59 +458,81 @@ function makeWritable(vault, relativePath) {
   } catch (e) {
   }
 }
-async function removeRecursive(vault, path) {
+function makeReadOnly(vault, relativePath) {
   try {
-    const stat = await vault.adapter.stat(path);
-    if (!stat)
+    fs.chmodSync(getFullPath(vault, relativePath), 292);
+  } catch (e) {
+  }
+}
+async function scanExistingFiles(vault, dirPath) {
+  const result = /* @__PURE__ */ new Map();
+  async function scanDir(dir) {
+    let listed;
+    try {
+      listed = await vault.adapter.list(dir);
+    } catch (e) {
       return;
-    if (stat.type === "folder") {
-      const listed = await vault.adapter.list(path);
-      for (const file of listed.files) {
+    }
+    for (const file of listed.files) {
+      if (!file.endsWith(".md"))
+        continue;
+      try {
+        const content = await vault.adapter.read(file);
+        const pageId = extractFrontmatterField(content, "confluence-id");
+        const lastSynced = extractFrontmatterField(content, "last-synced");
+        if (pageId && lastSynced) {
+          result.set(pageId, { path: file, lastSynced });
+        }
+      } catch (e) {
+      }
+    }
+    for (const folder of listed.folders) {
+      await scanDir(folder);
+    }
+  }
+  await scanDir(dirPath);
+  return result;
+}
+function extractFrontmatterField(content, field) {
+  var _a;
+  const match = content.match(new RegExp(`^${field}: "([^"]+)"`, "m"));
+  return (_a = match == null ? void 0 : match[1]) != null ? _a : null;
+}
+async function removeOrphanedFiles(vault, syncFolderPath, expectedPaths) {
+  async function cleanDir(dir) {
+    let listed;
+    try {
+      listed = await vault.adapter.list(dir);
+    } catch (e) {
+      return true;
+    }
+    for (const file of listed.files) {
+      if (file.endsWith(".md") && !expectedPaths.has(file)) {
+        console.log(`${LOG2} removing orphaned file: ${file}`);
         makeWritable(vault, file);
         await vault.adapter.remove(file);
       }
-      for (const folder of listed.folders) {
-        await removeRecursive(vault, folder);
-      }
-      try {
-        await vault.adapter.rmdir(path, true);
-      } catch (e) {
-      }
-    } else {
-      makeWritable(vault, path);
-      await vault.adapter.remove(path);
     }
-  } catch (e) {
-  }
-}
-async function wipeSyncFolder(vault, syncFolderPath) {
-  console.log(`${LOG2} wiping sync folder: ${syncFolderPath}`);
-  try {
-    const listed = await vault.adapter.list(syncFolderPath);
-    for (const file of listed.files) {
-      makeWritable(vault, file);
-      await vault.adapter.remove(file);
-    }
+    let allChildrenGone = true;
     for (const folder of listed.folders) {
-      const name = folder.split("/").pop();
-      if (name === "attachments") {
-        await wipeAttachmentsFolder(vault, folder);
+      const isEmpty = await cleanDir(folder);
+      if (isEmpty && folder !== `${syncFolderPath}/attachments`) {
+        try {
+          await vault.adapter.rmdir(folder, true);
+        } catch (e) {
+        }
       } else {
-        await removeRecursive(vault, folder);
+        allChildrenGone = false;
       }
     }
-  } catch (e) {
-  }
-}
-async function wipeAttachmentsFolder(vault, attachmentsPath) {
-  try {
-    const listed = await vault.adapter.list(attachmentsPath);
-    for (const file of listed.files) {
-      makeWritable(vault, file);
-      await vault.adapter.remove(file);
+    try {
+      const recheck = await vault.adapter.list(dir);
+      return recheck.files.length === 0 && recheck.folders.length === 0;
+    } catch (e) {
+      return true;
     }
-  } catch (e) {
   }
+  await cleanDir(syncFolderPath);
 }
 function buildFrontmatter(pageId, baseUrl, spaceKey, title) {
   const url = `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}`;
@@ -540,42 +570,44 @@ async function runSyncForTarget(target, settings, vault, onProgress) {
       tree = [homeRoot];
       console.log(`${LOG2} rooted tree at home page "${homeRoot.page.title}"`);
     } else {
-      console.warn(`${LOG2} home page ${homePageId} not found in page list \u2014 syncing all roots`);
+      console.warn(`${LOG2} home page ${homePageId} not found \u2014 syncing all roots`);
     }
   }
-  function countNodes(nodes) {
-    return nodes.reduce((n, node) => n + 1 + countNodes(node.children), 0);
-  }
-  const pageCount = countNodes(tree);
-  console.log(`${LOG2} ${pageCount} pages to sync`);
-  new import_obsidian3.Notice(`${spaceKey}: ${pageCount} pages found, writing\u2026`);
   const pathMap = /* @__PURE__ */ new Map();
   computePaths(tree, syncFolderPath, pathMap);
-  await wipeSyncFolder(vault, syncFolderPath);
+  const filteredPages = flattenTree(tree);
+  const expectedPaths = new Set(pathMap.values());
+  const existingFiles = await scanExistingFiles(vault, syncFolderPath);
+  console.log(`${LOG2} ${existingFiles.size} existing synced files found`);
   try {
     await vault.adapter.mkdir(syncFolderPath);
   } catch (e) {
   }
-  function flattenTree(nodes) {
-    const result = [];
-    for (const node of nodes) {
-      result.push(node.page);
-      result.push(...flattenTree(node.children));
-    }
-    return result;
-  }
-  const filteredPages = flattenTree(tree);
   const converter = new AdfConverter(pathMap, confluenceBaseUrl);
   let syncedCount = 0;
+  let skippedCount = 0;
   let failedCount = 0;
-  for (const page of filteredPages) {
+  new import_obsidian3.Notice(`${spaceKey}: ${filteredPages.length} pages found, syncing\u2026`);
+  for (let i = 0; i < filteredPages.length; i++) {
+    const page = filteredPages[i];
     const vaultPath = pathMap.get(page.id);
     if (!vaultPath)
       continue;
-    const current = syncedCount + failedCount + 1;
-    console.log(`${LOG2} [${current}/${filteredPages.length}] "${page.title}" \u2192 ${vaultPath}`);
-    onProgress == null ? void 0 : onProgress(current, filteredPages.length, page.title);
+    onProgress == null ? void 0 : onProgress(i + 1, filteredPages.length, page.title);
+    const existing = existingFiles.get(page.id);
+    const isUpToDate = existing && existing.path === vaultPath && new Date(existing.lastSynced).getTime() >= new Date(page.versionDate).getTime();
+    if (isUpToDate) {
+      skippedCount++;
+      console.debug(`${LOG2} [${i + 1}/${filteredPages.length}] skipping unchanged "${page.title}"`);
+      continue;
+    }
+    console.log(`${LOG2} [${i + 1}/${filteredPages.length}] writing "${page.title}" \u2192 ${vaultPath}`);
     try {
+      if (existing && existing.path !== vaultPath) {
+        console.log(`${LOG2} page "${page.title}" moved: ${existing.path} \u2192 ${vaultPath}`);
+        makeWritable(vault, existing.path);
+        await vault.adapter.remove(existing.path);
+      }
       const adf = await client.getPageBody(page.id);
       const dir = vaultPath.split("/").slice(0, -1).join("/");
       if (dir) {
@@ -592,22 +624,21 @@ async function runSyncForTarget(target, settings, vault, onProgress) {
         converter
       );
       const content = buildFrontmatter(page.id, confluenceBaseUrl, spaceKey, page.title) + markdown;
+      if (existing)
+        makeWritable(vault, vaultPath);
       await vault.adapter.write(vaultPath, content);
-      try {
-        fs.chmodSync(getFullPath(vault, vaultPath), 292);
-      } catch (e) {
-      }
+      makeReadOnly(vault, vaultPath);
       syncedCount++;
     } catch (err) {
       failedCount++;
       console.warn(`${LOG2} failed to sync page ${page.id} "${page.title}":`, err);
     }
   }
-  console.log(`${LOG2} done \u2014 ${syncedCount} synced, ${failedCount} failed`);
-  if (failedCount > 0) {
-    console.warn(`${LOG2} ${failedCount} page(s) failed \u2014 check console for details`);
-  }
-  return syncedCount;
+  await removeOrphanedFiles(vault, syncFolderPath, expectedPaths);
+  console.log(
+    `${LOG2} done \u2014 ${syncedCount} updated, ${skippedCount} skipped (unchanged), ${failedCount} failed`
+  );
+  return syncedCount + skippedCount;
 }
 async function resolveMediaNodes(adf, pageId, syncFolderPath, imageDownloader, converter) {
   const mediaReplacements = /* @__PURE__ */ new Map();

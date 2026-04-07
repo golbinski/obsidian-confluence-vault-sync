@@ -5,6 +5,7 @@ export interface ConfluencePage {
   title: string;
   parentId: string | null;
   spaceKey: string;
+  versionDate: string; // ISO timestamp of last modification from Confluence
 }
 
 export interface AdfDocument {
@@ -86,7 +87,12 @@ export class ConfluenceClient {
 
   async getSpacePages(spaceKey: string): Promise<ConfluencePage[]> {
     type SpacePagesResponse = {
-      results: Array<{ id: string; title: string; parentId?: string | null }>;
+      results: Array<{
+        id: string;
+        title: string;
+        parentId?: string | null;
+        version?: { createdAt?: string };
+      }>;
       _links?: { next?: string };
     };
     const pages: ConfluencePage[] = [];
@@ -103,6 +109,7 @@ export class ConfluenceClient {
           title: page.title,
           parentId: page.parentId ?? null,
           spaceKey,
+          versionDate: page.version?.createdAt ?? new Date(0).toISOString(),
         });
       }
 
@@ -123,7 +130,13 @@ export class ConfluenceClient {
 
   async getPageChildren(pageId: string): Promise<ConfluencePage[]> {
     type ChildrenResponse = {
-      results: Array<{ id: string; title: string; parentId?: string | null; spaceKey?: string }>;
+      results: Array<{
+        id: string;
+        title: string;
+        parentId?: string | null;
+        spaceKey?: string;
+        version?: { createdAt?: string };
+      }>;
       _links?: { next?: string };
     };
     const children: ConfluencePage[] = [];
@@ -139,6 +152,7 @@ export class ConfluenceClient {
           title: page.title,
           parentId: page.parentId ?? pageId,
           spaceKey: page.spaceKey ?? '',
+          versionDate: page.version?.createdAt ?? new Date(0).toISOString(),
         });
       }
 
