@@ -13,6 +13,8 @@ import {
   type SyncTarget,
 } from './src/settings';
 import { runSyncForTarget } from './src/sync-engine';
+import { WritebackView, WRITEBACK_VIEW_TYPE } from './src/writeback-view';
+import { isWritable } from './src/fs-utils';
 
 export default class ConfluenceVaultSyncPlugin extends Plugin {
   settings!: ConfluenceVaultSyncSettings;
@@ -24,18 +26,30 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
 
     this.statusBarEl = this.addStatusBarItem();
 
-    // Ribbon icon
+    // Register writeback view
+    this.registerView(WRITEBACK_VIEW_TYPE, (leaf) => new WritebackView(leaf, this));
+
+    // Ribbon: sync
     this.addRibbonIcon('refresh-cw', 'Sync Confluence', () => {
       this.syncAll();
     });
 
-    // Command
+    // Ribbon: changes pane
+    this.addRibbonIcon('git-pull-request', 'Confluence Changes', () => {
+      this.openWritebackView();
+    });
+
+    // Commands
     this.addCommand({
       id: 'sync-confluence',
       name: 'Sync Confluence',
-      callback: () => {
-        this.syncAll();
-      },
+      callback: () => { this.syncAll(); },
+    });
+
+    this.addCommand({
+      id: 'open-confluence-changes',
+      name: 'Open Confluence Changes',
+      callback: () => { this.openWritebackView(); },
     });
 
     // Settings tab
@@ -60,28 +74,38 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
       })
     );
 
-    // Read-only enforcement: revert edits to synced files
+    // Read-only enforcement: revert edits to locked synced files.
+    // Skip the revert if the file has been explicitly unlocked (writable).
     this.registerEvent(
       this.app.vault.on('modify', (file) => {
         const isManaged = this.settings.syncTargets.some((t) =>
           file.path.startsWith(t.syncFolderPath + '/')
         );
-        if (isManaged) {
-          new Notice(
-            'This file is managed by Confluence Vault Sync and cannot be edited.'
-          );
-          // Re-read from disk to revert
-          this.app.vault.adapter
-            .read(file.path)
-            .then((content) => {
-              this.app.vault.adapter.write(file.path, content);
-            })
-            .catch(() => {
-              // Ignore if read fails
-            });
-        }
+        if (!isManaged) return;
+
+        // If the file is writable, the user unlocked it intentionally — don't revert
+        if (isWritable(this.app.vault, file.path)) return;
+
+        new Notice('This file is managed by Confluence Vault Sync and cannot be edited.');
+        this.app.vault.adapter
+          .read(file.path)
+          .then((content) => this.app.vault.adapter.write(file.path, content))
+          .catch(() => { /* ignore */ });
       })
     );
+  }
+
+  openWritebackView(): void {
+    const existing = this.app.workspace.getLeavesOfType(WRITEBACK_VIEW_TYPE);
+    if (existing.length > 0) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (leaf) {
+      leaf.setViewState({ type: WRITEBACK_VIEW_TYPE, active: true });
+      this.app.workspace.revealLeaf(leaf);
+    }
   }
 
   async loadSettings(): Promise<void> {

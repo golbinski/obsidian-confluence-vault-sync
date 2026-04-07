@@ -177,6 +177,50 @@ export class ConfluenceClient {
     }
   }
 
+  /** Returns the current version number and last-updated timestamp of a page. */
+  async getPageCurrentVersion(pageId: string): Promise<{ version: number; updatedAt: string }> {
+    const data = await this.request<{
+      version: { number: number; createdAt: string };
+    }>(`${this.baseUrl}/wiki/api/v2/pages/${pageId}`);
+    return { version: data.version.number, updatedAt: data.version.createdAt };
+  }
+
+  /** Updates a page's title and body in Confluence. currentVersion is the version to base off. */
+  async updatePage(
+    pageId: string,
+    title: string,
+    adf: AdfDocument,
+    currentVersion: number
+  ): Promise<void> {
+    console.debug(`${LOG} updating page ${pageId} "${title}" (base version ${currentVersion})`);
+    try {
+      await requestUrl({
+        url: `${this.baseUrl}/wiki/api/v2/pages/${pageId}`,
+        method: 'PUT',
+        headers: {
+          Authorization: this.authHeader,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          id: pageId,
+          status: 'current',
+          title,
+          body: {
+            representation: 'atlas_doc_format',
+            value: JSON.stringify(adf),
+          },
+          version: {
+            number: currentVersion + 1,
+            message: 'Updated via Obsidian Confluence Vault Sync',
+          },
+        }),
+      });
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      throw new Error(`Failed to update page ${pageId}${status ? ` (${status})` : ''}`);
+    }
+  }
+
   getBaseUrl(): string {
     return this.baseUrl;
   }

@@ -147,6 +147,41 @@ var init_confluence_client = __esm({
           throw new Error(`Binary fetch error${status ? ` ${status}` : ""} \u2014 ${url}`);
         }
       }
+      /** Returns the current version number and last-updated timestamp of a page. */
+      async getPageCurrentVersion(pageId) {
+        const data = await this.request(`${this.baseUrl}/wiki/api/v2/pages/${pageId}`);
+        return { version: data.version.number, updatedAt: data.version.createdAt };
+      }
+      /** Updates a page's title and body in Confluence. currentVersion is the version to base off. */
+      async updatePage(pageId, title, adf, currentVersion) {
+        console.debug(`${LOG} updating page ${pageId} "${title}" (base version ${currentVersion})`);
+        try {
+          await (0, import_obsidian.requestUrl)({
+            url: `${this.baseUrl}/wiki/api/v2/pages/${pageId}`,
+            method: "PUT",
+            headers: {
+              Authorization: this.authHeader,
+              "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+              id: pageId,
+              status: "current",
+              title,
+              body: {
+                representation: "atlas_doc_format",
+                value: JSON.stringify(adf)
+              },
+              version: {
+                number: currentVersion + 1,
+                message: "Updated via Obsidian Confluence Vault Sync"
+              }
+            })
+          });
+        } catch (err) {
+          const status = err.status;
+          throw new Error(`Failed to update page ${pageId}${status ? ` (${status})` : ""}`);
+        }
+      }
       getBaseUrl() {
         return this.baseUrl;
       }
@@ -163,7 +198,7 @@ __export(main_exports, {
   default: () => ConfluenceVaultSyncPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/settings.ts
 var DEFAULT_SETTINGS = {
@@ -408,8 +443,42 @@ var ImageDownloader = class {
   }
 };
 
-// src/sync-engine.ts
+// src/fs-utils.ts
 var fs = __toESM(require("fs"));
+function getFullPath(vault, relativePath) {
+  return vault.adapter.getFullPath(relativePath);
+}
+function makeWritable(vault, relativePath) {
+  try {
+    fs.chmodSync(getFullPath(vault, relativePath), 420);
+  } catch (e) {
+  }
+}
+function makeReadOnly(vault, relativePath) {
+  try {
+    fs.chmodSync(getFullPath(vault, relativePath), 292);
+  } catch (e) {
+  }
+}
+function isWritable(vault, relativePath) {
+  try {
+    fs.accessSync(getFullPath(vault, relativePath), fs.constants.W_OK);
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+function extractFrontmatterField(content, field) {
+  var _a;
+  const match = content.match(new RegExp(`^${field}: "([^"]+)"`, "m"));
+  return (_a = match == null ? void 0 : match[1]) != null ? _a : null;
+}
+function stripFrontmatter(content) {
+  const match = content.match(/^---\n[\s\S]*?\n---\n/);
+  return match ? content.slice(match[0].length) : content;
+}
+
+// src/sync-engine.ts
 var LOG2 = "[Confluence Vault Sync]";
 function sanitizeTitle(title) {
   return title.replace(/[/:?*|\\<>"]/g, "-");
@@ -450,21 +519,6 @@ function flattenTree(nodes) {
   }
   return result;
 }
-function getFullPath(vault, relativePath) {
-  return vault.adapter.getFullPath(relativePath);
-}
-function makeWritable(vault, relativePath) {
-  try {
-    fs.chmodSync(getFullPath(vault, relativePath), 420);
-  } catch (e) {
-  }
-}
-function makeReadOnly(vault, relativePath) {
-  try {
-    fs.chmodSync(getFullPath(vault, relativePath), 292);
-  } catch (e) {
-  }
-}
 async function scanExistingFiles(vault, dirPath) {
   const result = /* @__PURE__ */ new Map();
   async function scanDir(dir) {
@@ -493,11 +547,6 @@ async function scanExistingFiles(vault, dirPath) {
   }
   await scanDir(dirPath);
   return result;
-}
-function extractFrontmatterField(content, field) {
-  var _a;
-  const match = content.match(new RegExp(`^${field}: "([^"]+)"`, "m"));
-  return (_a = match == null ? void 0 : match[1]) != null ? _a : null;
 }
 async function removeOrphanedFiles(vault, syncFolderPath, expectedPaths) {
   async function cleanDir(dir) {
@@ -700,8 +749,592 @@ async function resolveMediaNodes(adf, pageId, syncFolderPath, imageDownloader, c
   return converter.convert(resolvedAdf);
 }
 
+// src/writeback-view.ts
+var import_obsidian4 = require("obsidian");
+init_confluence_client();
+
+// src/markdown-to-adf.ts
+function markdownToAdf(markdown, pageIndex, _baseUrl) {
+  const lines = markdown.split("\n");
+  const nodes = parseBlocks(lines, 0, lines.length, pageIndex);
+  return { version: 1, type: "doc", content: nodes };
+}
+function parseBlocks(lines, start, end, pageIndex) {
+  const nodes = [];
+  let i = start;
+  while (i < end) {
+    const line = lines[i];
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+    if (line.match(/^```/)) {
+      const lang = line.slice(3).trim();
+      const codeLines = [];
+      i++;
+      while (i < end && !lines[i].match(/^```\s*$/)) {
+        codeLines.push(lines[i]);
+        i++;
+      }
+      i++;
+      nodes.push({
+        type: "codeBlock",
+        attrs: { language: lang || null },
+        content: [{ type: "text", text: codeLines.join("\n") }]
+      });
+      continue;
+    }
+    if (line.match(/^---+\s*$/) || line.match(/^\*\*\*+\s*$/) || line.match(/^___+\s*$/)) {
+      nodes.push({ type: "rule" });
+      i++;
+      continue;
+    }
+    const headingMatch = line.match(/^(#{1,6})\s+(.*)/);
+    if (headingMatch) {
+      nodes.push({
+        type: "heading",
+        attrs: { level: headingMatch[1].length },
+        content: parseInline(headingMatch[2], pageIndex)
+      });
+      i++;
+      continue;
+    }
+    if (line.match(/^\|/)) {
+      const tableLines = [];
+      while (i < end && lines[i].match(/^\|/)) {
+        tableLines.push(lines[i]);
+        i++;
+      }
+      const tableNode = parseTable(tableLines, pageIndex);
+      if (tableNode)
+        nodes.push(tableNode);
+      continue;
+    }
+    if (line.match(/^>\s?/)) {
+      const quoteLines = [];
+      while (i < end && lines[i].match(/^>\s?/)) {
+        quoteLines.push(lines[i].replace(/^>\s?/, ""));
+        i++;
+      }
+      nodes.push({
+        type: "blockquote",
+        content: parseBlocks(quoteLines, 0, quoteLines.length, pageIndex)
+      });
+      continue;
+    }
+    if (line.match(/^(\s*)[-*]\s/) || line.match(/^(\s*)\d+\.\s/)) {
+      const { node, consumed } = parseList(lines, i, end, pageIndex, 0);
+      nodes.push(node);
+      i += consumed;
+      continue;
+    }
+    const paraLines = [];
+    while (i < end && lines[i].trim() !== "" && !isBlockStart(lines[i])) {
+      paraLines.push(lines[i]);
+      i++;
+    }
+    if (paraLines.length > 0) {
+      const inlineContent = parseInline(paraLines.join("\n"), pageIndex);
+      if (inlineContent.length > 0) {
+        nodes.push({ type: "paragraph", content: inlineContent });
+      }
+    }
+  }
+  return nodes;
+}
+function isBlockStart(line) {
+  return !!(line.match(/^#{1,6}\s/) || line.match(/^```/) || line.match(/^---+\s*$/) || line.match(/^>\s?/) || line.match(/^(\s*)[-*]\s/) || line.match(/^(\s*)\d+\.\s/) || line.match(/^\|/));
+}
+function parseList(lines, start, end, pageIndex, depth) {
+  const isOrdered = !!lines[start].match(/^(\s*)\d+\.\s/);
+  const listType = isOrdered ? "orderedList" : "bulletList";
+  const items = [];
+  let i = start;
+  const baseIndent = getIndent(lines[start]);
+  while (i < end) {
+    const line = lines[i];
+    const indent = getIndent(line);
+    if (indent < baseIndent && i > start)
+      break;
+    if (line.trim() === "") {
+      i++;
+      continue;
+    }
+    const bulletMatch = line.match(/^(\s*)[-*]\s(.*)/);
+    const orderedMatch = line.match(/^(\s*)\d+\.\s(.*)/);
+    const match = bulletMatch != null ? bulletMatch : orderedMatch;
+    if (!match || indent !== baseIndent)
+      break;
+    const itemText = match[2];
+    const itemInline = parseInline(itemText, pageIndex);
+    const itemContent = [{ type: "paragraph", content: itemInline }];
+    i++;
+    const nestedLines = [];
+    while (i < end) {
+      const nextIndent = getIndent(lines[i]);
+      if (lines[i].trim() === "") {
+        i++;
+        continue;
+      }
+      if (nextIndent > baseIndent) {
+        nestedLines.push(lines[i]);
+        i++;
+      } else {
+        break;
+      }
+    }
+    if (nestedLines.length > 0) {
+      const { node: nestedList } = parseList(nestedLines, 0, nestedLines.length, pageIndex, depth + 1);
+      itemContent.push(nestedList);
+    }
+    items.push({ type: "listItem", content: itemContent });
+  }
+  return { node: { type: listType, content: items }, consumed: i - start };
+}
+function getIndent(line) {
+  var _a, _b;
+  return (_b = (_a = line.match(/^(\s*)/)) == null ? void 0 : _a[1].length) != null ? _b : 0;
+}
+function parseTable(lines, pageIndex) {
+  const dataLines = lines.filter((l) => !l.match(/^\|[\s|:-]+\|$/));
+  if (dataLines.length === 0)
+    return null;
+  const rows = dataLines.map((line, rowIndex) => {
+    const cells = line.replace(/^\|/, "").replace(/\|$/, "").split("|").map((cell) => cell.trim());
+    const cellNodes = cells.map((cell) => ({
+      type: rowIndex === 0 ? "tableHeader" : "tableCell",
+      content: [{ type: "paragraph", content: parseInline(cell, pageIndex) }]
+    }));
+    return { type: "tableRow", content: cellNodes };
+  });
+  return { type: "table", content: rows };
+}
+function parseInline(text, pageIndex) {
+  var _a, _b;
+  const nodes = [];
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.startsWith("\n")) {
+      nodes.push({ type: "hardBreak" });
+      remaining = remaining.slice(1);
+      continue;
+    }
+    const wikiMatch = remaining.match(/^\[\[([^\]|]+)(?:\|[^\]]+)?\]\]/);
+    if (wikiMatch) {
+      const pageName = wikiMatch[1].trim();
+      const url = pageIndex.get(pageName);
+      if (url) {
+        nodes.push({ type: "inlineCard", attrs: { url } });
+      } else {
+        nodes.push({ type: "text", text: pageName });
+      }
+      remaining = remaining.slice(wikiMatch[0].length);
+      continue;
+    }
+    const boldItalicMatch = remaining.match(/^\*\*\*([\s\S]+?)\*\*\*/);
+    if (boldItalicMatch) {
+      nodes.push(textNode(boldItalicMatch[1], [{ type: "strong" }, { type: "em" }]));
+      remaining = remaining.slice(boldItalicMatch[0].length);
+      continue;
+    }
+    const boldMatch = (_a = remaining.match(/^\*\*([\s\S]+?)\*\*/)) != null ? _a : remaining.match(/^__([\s\S]+?)__/);
+    if (boldMatch) {
+      nodes.push(textNode(boldMatch[1], [{ type: "strong" }]));
+      remaining = remaining.slice(boldMatch[0].length);
+      continue;
+    }
+    const italicMatch = (_b = remaining.match(/^\*((?:[^*])+?)\*/)) != null ? _b : remaining.match(/^_((?:[^_])+?)_/);
+    if (italicMatch) {
+      nodes.push(textNode(italicMatch[1], [{ type: "em" }]));
+      remaining = remaining.slice(italicMatch[0].length);
+      continue;
+    }
+    const strikeMatch = remaining.match(/^~~([\s\S]+?)~~/);
+    if (strikeMatch) {
+      nodes.push(textNode(strikeMatch[1], [{ type: "strike" }]));
+      remaining = remaining.slice(strikeMatch[0].length);
+      continue;
+    }
+    const codeMatch = remaining.match(/^`([^`]+)`/);
+    if (codeMatch) {
+      nodes.push(textNode(codeMatch[1], [{ type: "code" }]));
+      remaining = remaining.slice(codeMatch[0].length);
+      continue;
+    }
+    const linkMatch = remaining.match(/^\[([^\]]+)\]\(([^)]+)\)/);
+    if (linkMatch) {
+      nodes.push(textNode(linkMatch[1], [{ type: "link", attrs: { href: linkMatch[2] } }]));
+      remaining = remaining.slice(linkMatch[0].length);
+      continue;
+    }
+    const plainMatch = remaining.match(/^([\s\S]+?)(?=\[\[|\*\*\*|\*\*|__|\*|_|~~|`|\[|$|\n)/);
+    if (plainMatch && plainMatch[1].length > 0) {
+      nodes.push({ type: "text", text: plainMatch[1] });
+      remaining = remaining.slice(plainMatch[1].length);
+    } else {
+      nodes.push({ type: "text", text: remaining[0] });
+      remaining = remaining.slice(1);
+    }
+  }
+  return mergeAdjacentText(nodes);
+}
+function textNode(text, marks) {
+  return { type: "text", text, marks };
+}
+function mergeAdjacentText(nodes) {
+  var _a, _b, _c, _d;
+  const result = [];
+  for (const node of nodes) {
+    const prev = result[result.length - 1];
+    if (node.type === "text" && (prev == null ? void 0 : prev.type) === "text" && !((_a = node.marks) == null ? void 0 : _a.length) && !((_b = prev.marks) == null ? void 0 : _b.length)) {
+      prev.text = ((_c = prev.text) != null ? _c : "") + ((_d = node.text) != null ? _d : "");
+    } else {
+      result.push(node);
+    }
+  }
+  return result;
+}
+
+// src/writeback-view.ts
+var WRITEBACK_VIEW_TYPE = "confluence-writeback";
+var IMAGE_RE = /!\[\[|!\[.+?\]\(.+?\)/;
+var WritebackView = class extends import_obsidian4.ItemView {
+  // paths currently being pushed
+  constructor(leaf, plugin) {
+    super(leaf);
+    this.pushing = /* @__PURE__ */ new Set();
+    this.plugin = plugin;
+  }
+  getViewType() {
+    return WRITEBACK_VIEW_TYPE;
+  }
+  getDisplayText() {
+    return "Confluence Changes";
+  }
+  getIcon() {
+    return "git-pull-request";
+  }
+  async onOpen() {
+    await this.refresh();
+  }
+  async refresh() {
+    const entries = await this.scanEntries();
+    this.render(entries);
+  }
+  // ---------------------------------------------------------------------------
+  // Scanning
+  // ---------------------------------------------------------------------------
+  async scanEntries() {
+    const vault = this.app.vault;
+    const entries = [];
+    for (const target of this.plugin.settings.syncTargets) {
+      await this.scanDir(target.syncFolderPath, entries);
+    }
+    return entries;
+  }
+  async scanDir(dir, entries) {
+    let listed;
+    try {
+      listed = await this.app.vault.adapter.list(dir);
+    } catch (e) {
+      return;
+    }
+    for (const filePath of listed.files) {
+      if (!filePath.endsWith(".md"))
+        continue;
+      try {
+        const content = await this.app.vault.adapter.read(filePath);
+        const pageId = extractFrontmatterField(content, "confluence-id");
+        const title = extractFrontmatterField(content, "confluence-title");
+        const spaceKey = extractFrontmatterField(content, "space");
+        const lastSynced = extractFrontmatterField(content, "last-synced");
+        if (!pageId || !title || !spaceKey || !lastSynced)
+          continue;
+        const body = stripFrontmatter(content);
+        const state = await this.computeState(filePath, body, lastSynced);
+        entries.push({ path: filePath, pageId, title, spaceKey, lastSynced, state });
+      } catch (e) {
+      }
+    }
+    for (const folder of listed.folders) {
+      await this.scanDir(folder, entries);
+    }
+  }
+  async computeState(filePath, body, lastSynced) {
+    var _a;
+    if (this.pushing.has(filePath))
+      return { kind: "pushing" };
+    const writable = isWritable(this.app.vault, filePath);
+    if (!writable) {
+      if (IMAGE_RE.test(body))
+        return { kind: "has-images" };
+      return { kind: "locked" };
+    }
+    const stat = await this.app.vault.adapter.stat(filePath);
+    const mtime = (_a = stat == null ? void 0 : stat.mtime) != null ? _a : 0;
+    const syncedTime = new Date(lastSynced).getTime();
+    return mtime > syncedTime ? { kind: "modified" } : { kind: "unlocked" };
+  }
+  // ---------------------------------------------------------------------------
+  // Rendering
+  // ---------------------------------------------------------------------------
+  render(entries) {
+    var _a;
+    const container = this.containerEl.children[1];
+    container.empty();
+    container.style.padding = "12px";
+    const header = container.createDiv({ cls: "nav-header" });
+    header.style.display = "flex";
+    header.style.justifyContent = "space-between";
+    header.style.alignItems = "center";
+    header.style.marginBottom = "12px";
+    header.createEl("strong", { text: "Confluence Changes" });
+    const refreshBtn = header.createEl("button", { text: "\u27F3 Refresh" });
+    refreshBtn.addEventListener("click", () => this.refresh());
+    if (entries.length === 0) {
+      container.createEl("p", {
+        text: "No synced pages found. Run a sync first.",
+        cls: "pane-empty-state"
+      });
+      return;
+    }
+    const bySpace = /* @__PURE__ */ new Map();
+    for (const entry of entries) {
+      const group = (_a = bySpace.get(entry.spaceKey)) != null ? _a : [];
+      group.push(entry);
+      bySpace.set(entry.spaceKey, group);
+    }
+    for (const [spaceKey, pages] of bySpace) {
+      const section = container.createDiv();
+      section.style.marginBottom = "16px";
+      const sectionHeader = section.createEl("div");
+      sectionHeader.style.fontWeight = "600";
+      sectionHeader.style.marginBottom = "6px";
+      sectionHeader.style.opacity = "0.7";
+      sectionHeader.style.fontSize = "0.85em";
+      sectionHeader.style.textTransform = "uppercase";
+      sectionHeader.setText(spaceKey);
+      for (const entry of pages) {
+        this.renderRow(section, entry);
+      }
+    }
+  }
+  renderRow(container, entry) {
+    const row = container.createDiv();
+    row.style.display = "flex";
+    row.style.alignItems = "center";
+    row.style.justifyContent = "space-between";
+    row.style.padding = "5px 4px";
+    row.style.borderRadius = "4px";
+    row.style.marginBottom = "2px";
+    const left = row.createDiv();
+    left.style.display = "flex";
+    left.style.alignItems = "center";
+    left.style.gap = "6px";
+    left.style.overflow = "hidden";
+    const { icon, dim } = stateDecoration(entry.state);
+    left.createSpan({ text: icon });
+    const titleEl = left.createSpan({ text: entry.title });
+    titleEl.style.overflow = "hidden";
+    titleEl.style.textOverflow = "ellipsis";
+    titleEl.style.whiteSpace = "nowrap";
+    if (dim)
+      titleEl.style.opacity = "0.45";
+    const right = row.createDiv();
+    right.style.display = "flex";
+    right.style.gap = "4px";
+    right.style.flexShrink = "0";
+    switch (entry.state.kind) {
+      case "locked":
+        this.addButton(right, "Unlock", () => this.unlock(entry));
+        break;
+      case "has-images": {
+        const label = right.createSpan({ text: "has images" });
+        label.style.opacity = "0.45";
+        label.style.fontSize = "0.8em";
+        label.title = "Pages with images cannot be edited locally (image upload not supported)";
+        break;
+      }
+      case "unlocked":
+        this.addButton(right, "Relock", () => this.relock(entry));
+        break;
+      case "modified":
+        this.addButton(right, "Push", () => this.push(entry));
+        this.addButton(right, "Relock", () => this.relock(entry));
+        break;
+      case "pushing": {
+        const spinner = right.createSpan({ text: "\u2B06\uFE0F" });
+        spinner.title = "Pushing\u2026";
+        break;
+      }
+    }
+  }
+  addButton(container, label, onClick) {
+    const btn = container.createEl("button", { text: label });
+    btn.style.padding = "2px 8px";
+    btn.style.fontSize = "0.8em";
+    btn.addEventListener("click", onClick);
+    return btn;
+  }
+  // ---------------------------------------------------------------------------
+  // Actions
+  // ---------------------------------------------------------------------------
+  async unlock(entry) {
+    makeWritable(this.app.vault, entry.path);
+    await this.refresh();
+  }
+  async relock(entry) {
+    makeReadOnly(this.app.vault, entry.path);
+    await this.refresh();
+  }
+  async push(entry) {
+    const { confluenceBaseUrl, confluenceEmail, confluenceApiToken } = this.plugin.settings;
+    if (!confluenceBaseUrl || !confluenceEmail || !confluenceApiToken) {
+      new import_obsidian4.Notice("Confluence credentials not configured.");
+      return;
+    }
+    this.pushing.add(entry.path);
+    await this.refresh();
+    try {
+      const content = await this.app.vault.adapter.read(entry.path);
+      const body = stripFrontmatter(content);
+      if (IMAGE_RE.test(body)) {
+        new import_obsidian4.Notice(`"${entry.title}" contains images and cannot be pushed.`);
+        return;
+      }
+      const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
+      const { version, updatedAt } = await client.getPageCurrentVersion(entry.pageId);
+      const remoteUpdated = new Date(updatedAt).getTime();
+      const lastSynced = new Date(entry.lastSynced).getTime();
+      if (remoteUpdated > lastSynced) {
+        const proceed = await this.showConflictModal(entry.title, updatedAt, entry.lastSynced);
+        if (!proceed)
+          return;
+      }
+      const reverseIndex = await this.buildReversePageIndex(entry.spaceKey);
+      const adf = markdownToAdf(body, reverseIndex, confluenceBaseUrl);
+      await client.updatePage(entry.pageId, entry.title, adf, version);
+      const updatedContent = updateFrontmatterField(content, "last-synced", (/* @__PURE__ */ new Date()).toISOString());
+      makeWritable(this.app.vault, entry.path);
+      await this.app.vault.adapter.write(entry.path, updatedContent);
+      makeReadOnly(this.app.vault, entry.path);
+      new import_obsidian4.Notice(`"${entry.title}" pushed to Confluence.`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new import_obsidian4.Notice(`Push failed: ${msg}`, 8e3);
+    } finally {
+      this.pushing.delete(entry.path);
+      await this.refresh();
+    }
+  }
+  showConflictModal(title, remoteUpdatedAt, lastSynced) {
+    return new Promise((resolve) => {
+      new ConflictModal(this.app, title, remoteUpdatedAt, lastSynced, resolve).open();
+    });
+  }
+  /** Build a map of sanitized-filename → Confluence page URL for the given space. */
+  async buildReversePageIndex(spaceKey) {
+    const index = /* @__PURE__ */ new Map();
+    const target = this.plugin.settings.syncTargets.find((t) => t.spaceKey === spaceKey);
+    if (!target)
+      return index;
+    const { confluenceBaseUrl } = this.plugin.settings;
+    await this.walkDir(target.syncFolderPath, async (filePath) => {
+      var _a, _b;
+      try {
+        const content = await this.app.vault.adapter.read(filePath);
+        const pageId = extractFrontmatterField(content, "confluence-id");
+        if (pageId) {
+          const filename = (_b = (_a = filePath.split("/").pop()) == null ? void 0 : _a.replace(/\.md$/, "")) != null ? _b : "";
+          const url = `${confluenceBaseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}`;
+          index.set(filename, url);
+        }
+      } catch (e) {
+      }
+    });
+    return index;
+  }
+  async walkDir(dir, fn) {
+    let listed;
+    try {
+      listed = await this.app.vault.adapter.list(dir);
+    } catch (e) {
+      return;
+    }
+    for (const file of listed.files) {
+      if (file.endsWith(".md"))
+        await fn(file);
+    }
+    for (const folder of listed.folders) {
+      await this.walkDir(folder, fn);
+    }
+  }
+};
+var ConflictModal = class extends import_obsidian4.Modal {
+  constructor(app, title, remoteUpdatedAt, lastSynced, resolve) {
+    super(app);
+    this.title = title;
+    this.remoteUpdatedAt = remoteUpdatedAt;
+    this.lastSynced = lastSynced;
+    this.resolve = resolve;
+  }
+  onOpen() {
+    const { contentEl } = this;
+    contentEl.createEl("h3", { text: "Conflict detected" });
+    contentEl.createEl("p", {
+      text: `"${this.title}" was updated in Confluence on ${fmtDate(this.remoteUpdatedAt)}, after your last sync on ${fmtDate(this.lastSynced)}.`
+    });
+    contentEl.createEl("p", {
+      text: "Force pushing will overwrite the Confluence version."
+    });
+    const btnRow = contentEl.createDiv();
+    btnRow.style.display = "flex";
+    btnRow.style.gap = "8px";
+    btnRow.style.marginTop = "16px";
+    btnRow.style.justifyContent = "flex-end";
+    const cancelBtn = btnRow.createEl("button", { text: "Cancel" });
+    cancelBtn.addEventListener("click", () => {
+      this.resolve(false);
+      this.close();
+    });
+    const forceBtn = btnRow.createEl("button", { text: "Force Push" });
+    forceBtn.style.color = "var(--color-red)";
+    forceBtn.addEventListener("click", () => {
+      this.resolve(true);
+      this.close();
+    });
+  }
+  onClose() {
+    this.resolve(false);
+    this.contentEl.empty();
+  }
+};
+function stateDecoration(state) {
+  switch (state.kind) {
+    case "locked":
+      return { icon: "\u{1F512}", dim: false };
+    case "has-images":
+      return { icon: "\u{1F5BC}\uFE0F", dim: true };
+    case "unlocked":
+      return { icon: "\u270F\uFE0F", dim: false };
+    case "modified":
+      return { icon: "\u270F\uFE0F\u25CF", dim: false };
+    case "pushing":
+      return { icon: "\u2B06\uFE0F", dim: false };
+  }
+}
+function fmtDate(iso) {
+  return new Date(iso).toLocaleString();
+}
+function updateFrontmatterField(content, field, value) {
+  return content.replace(
+    new RegExp(`^(${field}: )"[^"]*"`, "m"),
+    `$1"${value}"`
+  );
+}
+
 // main.ts
-var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
+var ConfluenceVaultSyncPlugin = class extends import_obsidian5.Plugin {
   constructor() {
     super(...arguments);
     this.syncInProgress = false;
@@ -709,8 +1342,12 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
   async onload() {
     await this.loadSettings();
     this.statusBarEl = this.addStatusBarItem();
+    this.registerView(WRITEBACK_VIEW_TYPE, (leaf) => new WritebackView(leaf, this));
     this.addRibbonIcon("refresh-cw", "Sync Confluence", () => {
       this.syncAll();
+    });
+    this.addRibbonIcon("git-pull-request", "Confluence Changes", () => {
+      this.openWritebackView();
     });
     this.addCommand({
       id: "sync-confluence",
@@ -719,10 +1356,17 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
         this.syncAll();
       }
     });
+    this.addCommand({
+      id: "open-confluence-changes",
+      name: "Open Confluence Changes",
+      callback: () => {
+        this.openWritebackView();
+      }
+    });
     this.addSettingTab(new ConfluenceVaultSyncSettingTab(this.app, this));
     this.registerEvent(
       this.app.workspace.on("file-menu", (menu, file) => {
-        if (file instanceof import_obsidian4.TFolder) {
+        if (file instanceof import_obsidian5.TFolder) {
           const target = this.settings.syncTargets.find(
             (t) => t.syncFolderPath === file.path
           );
@@ -739,17 +1383,27 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
         const isManaged = this.settings.syncTargets.some(
           (t) => file.path.startsWith(t.syncFolderPath + "/")
         );
-        if (isManaged) {
-          new import_obsidian4.Notice(
-            "This file is managed by Confluence Vault Sync and cannot be edited."
-          );
-          this.app.vault.adapter.read(file.path).then((content) => {
-            this.app.vault.adapter.write(file.path, content);
-          }).catch(() => {
-          });
-        }
+        if (!isManaged)
+          return;
+        if (isWritable(this.app.vault, file.path))
+          return;
+        new import_obsidian5.Notice("This file is managed by Confluence Vault Sync and cannot be edited.");
+        this.app.vault.adapter.read(file.path).then((content) => this.app.vault.adapter.write(file.path, content)).catch(() => {
+        });
       })
     );
+  }
+  openWritebackView() {
+    const existing = this.app.workspace.getLeavesOfType(WRITEBACK_VIEW_TYPE);
+    if (existing.length > 0) {
+      this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (leaf) {
+      leaf.setViewState({ type: WRITEBACK_VIEW_TYPE, active: true });
+      this.app.workspace.revealLeaf(leaf);
+    }
   }
   async loadSettings() {
     this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
@@ -777,12 +1431,12 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
   }
   async syncAll() {
     if (this.syncInProgress) {
-      new import_obsidian4.Notice("Confluence Vault Sync: sync already in progress");
+      new import_obsidian5.Notice("Confluence Vault Sync: sync already in progress");
       return;
     }
     const missing = this.validateSettings();
     if (missing.length > 0) {
-      new import_obsidian4.Notice(`Confluence Vault Sync: missing settings \u2014 ${missing.join(", ")}`);
+      new import_obsidian5.Notice(`Confluence Vault Sync: missing settings \u2014 ${missing.join(", ")}`);
       return;
     }
     this.syncInProgress = true;
@@ -801,12 +1455,12 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
         );
         totalPages += count;
       }
-      new import_obsidian4.Notice(
+      new import_obsidian5.Notice(
         `Sync complete \u2014 ${targets.length} space${targets.length !== 1 ? "s" : ""}, ${totalPages} pages synced`
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      new import_obsidian4.Notice(`Sync failed: ${message}`);
+      new import_obsidian5.Notice(`Sync failed: ${message}`);
     } finally {
       this.syncInProgress = false;
       this.clearStatus();
@@ -814,13 +1468,13 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
   }
   async syncTarget(target) {
     if (this.syncInProgress) {
-      new import_obsidian4.Notice("Confluence Vault Sync: sync already in progress");
+      new import_obsidian5.Notice("Confluence Vault Sync: sync already in progress");
       return;
     }
     const missing = this.validateSettings();
     const settingsOnly = missing.filter((m) => m !== "at least one Sync Target");
     if (settingsOnly.length > 0) {
-      new import_obsidian4.Notice(`Confluence Vault Sync: missing settings \u2014 ${settingsOnly.join(", ")}`);
+      new import_obsidian5.Notice(`Confluence Vault Sync: missing settings \u2014 ${settingsOnly.join(", ")}`);
       return;
     }
     this.syncInProgress = true;
@@ -834,17 +1488,17 @@ var ConfluenceVaultSyncPlugin = class extends import_obsidian4.Plugin {
           this.setStatus(`\u21BB ${target.spaceKey} ${current}/${total} \u2014 ${label}`);
         }
       );
-      new import_obsidian4.Notice(`Sync complete \u2014 ${target.spaceKey}: ${count} pages synced`);
+      new import_obsidian5.Notice(`Sync complete \u2014 ${target.spaceKey}: ${count} pages synced`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      new import_obsidian4.Notice(`Sync failed: ${message}`);
+      new import_obsidian5.Notice(`Sync failed: ${message}`);
     } finally {
       this.syncInProgress = false;
       this.clearStatus();
     }
   }
 };
-var ConfluenceVaultSyncSettingTab = class extends import_obsidian4.PluginSettingTab {
+var ConfluenceVaultSyncSettingTab = class extends import_obsidian5.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -853,26 +1507,26 @@ var ConfluenceVaultSyncSettingTab = class extends import_obsidian4.PluginSetting
     const { containerEl } = this;
     containerEl.empty();
     containerEl.createEl("h2", { text: "Confluence Vault Sync" });
-    new import_obsidian4.Setting(containerEl).setName("Confluence Base URL").setDesc("e.g. https://yourorg.atlassian.net").addText(
+    new import_obsidian5.Setting(containerEl).setName("Confluence Base URL").setDesc("e.g. https://yourorg.atlassian.net").addText(
       (text) => text.setPlaceholder("https://yourorg.atlassian.net").setValue(this.plugin.settings.confluenceBaseUrl).onChange(async (value) => {
         this.plugin.settings.confluenceBaseUrl = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Confluence Email").setDesc("Your Atlassian account email").addText(
+    new import_obsidian5.Setting(containerEl).setName("Confluence Email").setDesc("Your Atlassian account email").addText(
       (text) => text.setPlaceholder("you@example.com").setValue(this.plugin.settings.confluenceEmail).onChange(async (value) => {
         this.plugin.settings.confluenceEmail = value.trim();
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Confluence API Token").setDesc("Atlassian API token (stored in plugin data)").addText((text) => {
+    new import_obsidian5.Setting(containerEl).setName("Confluence API Token").setDesc("Atlassian API token (stored in plugin data)").addText((text) => {
       text.inputEl.type = "password";
       text.setPlaceholder("\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022\u2022").setValue(this.plugin.settings.confluenceApiToken).onChange(async (value) => {
         this.plugin.settings.confluenceApiToken = value;
         await this.plugin.saveSettings();
       });
     });
-    new import_obsidian4.Setting(containerEl).setName("Max image download size (KB)").setDesc("Images at or below this size are downloaded locally").addText(
+    new import_obsidian5.Setting(containerEl).setName("Max image download size (KB)").setDesc("Images at or below this size are downloaded locally").addText(
       (text) => text.setPlaceholder("500").setValue(String(this.plugin.settings.maxImageDownloadSizeKb)).onChange(async (value) => {
         const num = parseInt(value, 10);
         if (!isNaN(num) && num > 0) {
@@ -881,19 +1535,19 @@ var ConfluenceVaultSyncSettingTab = class extends import_obsidian4.PluginSetting
         }
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("Sync concurrency").setDesc("Number of pages fetched in parallel (1\u201320). Higher values are faster but may hit Confluence rate limits.").addSlider(
+    new import_obsidian5.Setting(containerEl).setName("Sync concurrency").setDesc("Number of pages fetched in parallel (1\u201320). Higher values are faster but may hit Confluence rate limits.").addSlider(
       (slider) => slider.setLimits(1, 20, 1).setValue(this.plugin.settings.syncConcurrency).setDynamicTooltip().onChange(async (value) => {
         this.plugin.settings.syncConcurrency = value;
         await this.plugin.saveSettings();
       })
     );
     let testBtn;
-    new import_obsidian4.Setting(containerEl).setName("Test connection").setDesc("Verify credentials and check access to each configured space").addButton((btn) => {
+    new import_obsidian5.Setting(containerEl).setName("Test connection").setDesc("Verify credentials and check access to each configured space").addButton((btn) => {
       testBtn = btn;
       btn.setButtonText("Test").onClick(async () => {
         const { confluenceBaseUrl, confluenceEmail, confluenceApiToken, syncTargets } = this.plugin.settings;
         if (!confluenceBaseUrl || !confluenceEmail || !confluenceApiToken) {
-          new import_obsidian4.Notice("Fill in Base URL, Email, and API Token first.");
+          new import_obsidian5.Notice("Fill in Base URL, Email, and API Token first.");
           return;
         }
         testBtn.setButtonText("Testing\u2026").setDisabled(true);
@@ -901,21 +1555,21 @@ var ConfluenceVaultSyncSettingTab = class extends import_obsidian4.PluginSetting
           const { ConfluenceClient: ConfluenceClient2 } = await Promise.resolve().then(() => (init_confluence_client(), confluence_client_exports));
           const client = new ConfluenceClient2(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
           const displayName = await client.testConnection();
-          new import_obsidian4.Notice(`Connected as ${displayName}`);
+          new import_obsidian5.Notice(`Connected as ${displayName}`);
           for (const target of syncTargets) {
             if (!target.spaceKey)
               continue;
             try {
               const spaceName = await client.checkSpaceAccess(target.spaceKey);
-              new import_obsidian4.Notice(`Space "${target.spaceKey}": OK (${spaceName})`);
+              new import_obsidian5.Notice(`Space "${target.spaceKey}": OK (${spaceName})`);
             } catch (err) {
               const msg = err instanceof Error ? err.message : String(err);
-              new import_obsidian4.Notice(`Space "${target.spaceKey}": ${msg}`, 8e3);
+              new import_obsidian5.Notice(`Space "${target.spaceKey}": ${msg}`, 8e3);
             }
           }
         } catch (err) {
           const msg = err instanceof Error ? err.message : String(err);
-          new import_obsidian4.Notice(`Connection failed: ${msg}`, 8e3);
+          new import_obsidian5.Notice(`Connection failed: ${msg}`, 8e3);
         } finally {
           testBtn.setButtonText("Test").setDisabled(false);
         }

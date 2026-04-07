@@ -3,6 +3,12 @@ import type { ConfluenceVaultSyncSettings, SyncTarget } from './settings';
 import { ConfluenceClient, type ConfluencePage } from './confluence-client';
 import { AdfConverter } from './adf-converter';
 import { ImageDownloader } from './image-downloader';
+import {
+  getFullPath,
+  makeWritable,
+  makeReadOnly,
+  extractFrontmatterField,
+} from './fs-utils';
 import * as fs from 'fs';
 
 const LOG = '[Confluence Vault Sync]';
@@ -60,25 +66,8 @@ function flattenTree(nodes: PageNode[]): ConfluencePage[] {
 }
 
 type VaultAdapter = {
-  getFullPath(p: string): string;
   rmdir(p: string, recursive: boolean): Promise<void>;
 };
-
-function getFullPath(vault: Vault, relativePath: string): string {
-  return (vault.adapter as unknown as VaultAdapter).getFullPath(relativePath);
-}
-
-function makeWritable(vault: Vault, relativePath: string): void {
-  try {
-    fs.chmodSync(getFullPath(vault, relativePath), 0o644);
-  } catch { /* best effort */ }
-}
-
-function makeReadOnly(vault: Vault, relativePath: string): void {
-  try {
-    fs.chmodSync(getFullPath(vault, relativePath), 0o444);
-  } catch { /* best effort */ }
-}
 
 /** Scan all .md files under a vault path and return a map of pageId → {path, lastSynced}. */
 async function scanExistingFiles(
@@ -114,11 +103,6 @@ async function scanExistingFiles(
   return result;
 }
 
-function extractFrontmatterField(content: string, field: string): string | null {
-  const match = content.match(new RegExp(`^${field}: "([^"]+)"`, 'm'));
-  return match?.[1] ?? null;
-}
-
 /** Remove .md files that are no longer in the expected path set, then prune empty folders. */
 async function removeOrphanedFiles(
   vault: Vault,
@@ -146,7 +130,7 @@ async function removeOrphanedFiles(
       const isEmpty = await cleanDir(folder);
       if (isEmpty && folder !== `${syncFolderPath}/attachments`) {
         try {
-          await (vault.adapter as unknown as VaultAdapter).rmdir(folder, true);
+          await (vault.adapter as unknown as { rmdir(p: string, r: boolean): Promise<void> }).rmdir(folder, true);
         } catch { /* ignore */ }
       } else {
         allChildrenGone = false;
