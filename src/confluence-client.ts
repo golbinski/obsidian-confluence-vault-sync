@@ -177,6 +177,26 @@ export class ConfluenceClient {
     }
   }
 
+  /** Returns the names of all labels attached to a page. */
+  async getPageLabels(pageId: string): Promise<string[]> {
+    type LabelsResponse = {
+      results: Array<{ name: string }>;
+      _links?: { next?: string };
+    };
+    const labels: string[] = [];
+    let url: string | null =
+      `${this.baseUrl}/wiki/api/v2/pages/${pageId}/labels?limit=250`;
+
+    while (url) {
+      const data: LabelsResponse = await this.request<LabelsResponse>(url);
+      for (const label of data.results) labels.push(label.name);
+      const next: string | undefined = data._links?.next;
+      url = next ? `${this.baseUrl}${next}` : null;
+    }
+
+    return labels;
+  }
+
   /** Returns the current version number and last-updated timestamp of a page. */
   async getPageCurrentVersion(pageId: string): Promise<{ version: number; updatedAt: string }> {
     const data = await this.request<{

@@ -147,6 +147,20 @@ var init_confluence_client = __esm({
           throw new Error(`Binary fetch error${status ? ` ${status}` : ""} \u2014 ${url}`);
         }
       }
+      /** Returns the names of all labels attached to a page. */
+      async getPageLabels(pageId) {
+        var _a;
+        const labels = [];
+        let url = `${this.baseUrl}/wiki/api/v2/pages/${pageId}/labels?limit=250`;
+        while (url) {
+          const data = await this.request(url);
+          for (const label of data.results)
+            labels.push(label.name);
+          const next = (_a = data._links) == null ? void 0 : _a.next;
+          url = next ? `${this.baseUrl}${next}` : null;
+        }
+        return labels;
+      }
       /** Returns the current version number and last-updated timestamp of a page. */
       async getPageCurrentVersion(pageId) {
         const data = await this.request(`${this.baseUrl}/wiki/api/v2/pages/${pageId}`);
@@ -596,13 +610,14 @@ async function runWithConcurrency(items, limit, fn) {
     Array.from({ length: Math.min(limit, items.length) }, worker)
   );
 }
-function buildFrontmatter(pageId, baseUrl, spaceKey, title) {
-  const url = `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}`;
-  const lastSynced = (/* @__PURE__ */ new Date()).toISOString();
+function pageUrl(baseUrl, spaceKey, pageId) {
+  return `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}`;
+}
+function buildFrontmatter(pageId, baseUrl, spaceKey, title, lastSynced) {
   return [
     "---",
     `confluence-id: "${pageId}"`,
-    `confluence-url: "${url}"`,
+    `confluence-url: "${pageUrl(baseUrl, spaceKey, pageId)}"`,
     `confluence-title: "${title.replace(/"/g, '\\"')}"`,
     `space: "${spaceKey}"`,
     `last-synced: "${lastSynced}"`,
@@ -610,6 +625,47 @@ function buildFrontmatter(pageId, baseUrl, spaceKey, title) {
     "---",
     ""
   ].join("\n");
+}
+function buildManifest(tree, pathMap, manifestData, spaceKey, spaceName, homePageId, baseUrl) {
+  function walk(nodes) {
+    var _a;
+    const out = [];
+    for (const node of nodes) {
+      const meta = manifestData.get(node.page.id);
+      const children = walk(node.children);
+      if (!meta) {
+        out.push(...children);
+        continue;
+      }
+      out.push({
+        id: node.page.id,
+        title: node.page.title,
+        vaultPath: (_a = pathMap.get(node.page.id)) != null ? _a : "",
+        confluenceUrl: pageUrl(baseUrl, spaceKey, node.page.id),
+        modifiedAt: node.page.versionDate,
+        lastSynced: meta.lastSynced,
+        labels: meta.labels,
+        children
+      });
+    }
+    return out;
+  }
+  const treeNodes = walk(tree);
+  function count(nodes) {
+    let n = 0;
+    for (const node of nodes)
+      n += 1 + count(node.children);
+    return n;
+  }
+  return {
+    spaceKey,
+    spaceName,
+    homePageId,
+    baseUrl,
+    generatedAt: (/* @__PURE__ */ new Date()).toISOString(),
+    pageCount: count(treeNodes),
+    tree: treeNodes
+  };
 }
 async function runSyncForTarget(target, settings, vault, onProgress) {
   const { spaceKey, syncFolderPath } = target;
@@ -625,9 +681,10 @@ async function runSyncForTarget(target, settings, vault, onProgress) {
   const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
   const imageDownloader = new ImageDownloader(client, vault, maxImageDownloadSizeKb);
   console.log(`${LOG2} fetching page list\u2026`);
-  const [pages, homePageId] = await Promise.all([
+  const [pages, homePageId, spaceName] = await Promise.all([
     client.getSpacePages(spaceKey),
-    client.getSpaceHomePageId(spaceKey)
+    client.getSpaceHomePageId(spaceKey),
+    client.checkSpaceAccess(spaceKey).catch(() => null)
   ]);
   console.log(`${LOG2} ${pages.length} pages fetched, home page ID: ${homePageId != null ? homePageId : "unknown"}`);
   const fullTree = buildTree(pages);
@@ -656,6 +713,7 @@ async function runSyncForTarget(target, settings, vault, onProgress) {
   let skippedCount = 0;
   let failedCount = 0;
   let completedCount = 0;
+  const manifestData = /* @__PURE__ */ new Map();
   new import_obsidian3.Notice(`${spaceKey}: ${filteredPages.length} pages found, syncing\u2026`);
   console.log(`${LOG2} syncing ${filteredPages.length} pages with concurrency ${syncConcurrency}`);
   await runWithConcurrency(filteredPages, syncConcurrency, async (page, i) => {
@@ -666,9 +724,15 @@ async function runSyncForTarget(target, settings, vault, onProgress) {
     const isUpToDate = existing && existing.path === vaultPath && new Date(existing.lastSynced).getTime() >= new Date(page.versionDate).getTime();
     completedCount++;
     onProgress == null ? void 0 : onProgress(completedCount, filteredPages.length, page.title);
+    const labelsPromise = client.getPageLabels(page.id).catch((err) => {
+      console.warn(`${LOG2} failed to fetch labels for ${page.id} "${page.title}":`, err);
+      return [];
+    });
     if (isUpToDate) {
       skippedCount++;
       console.debug(`${LOG2} [${i + 1}/${filteredPages.length}] skipping unchanged "${page.title}"`);
+      const labels = await labelsPromise;
+      manifestData.set(page.id, { labels, lastSynced: existing.lastSynced });
       return;
     }
     console.log(`${LOG2} [${i + 1}/${filteredPages.length}] writing "${page.title}" \u2192 ${vaultPath}`);
@@ -693,18 +757,43 @@ async function runSyncForTarget(target, settings, vault, onProgress) {
         imageDownloader,
         converter
       );
-      const content = buildFrontmatter(page.id, confluenceBaseUrl, spaceKey, page.title) + markdown;
+      const lastSynced = (/* @__PURE__ */ new Date()).toISOString();
+      const content = buildFrontmatter(page.id, confluenceBaseUrl, spaceKey, page.title, lastSynced) + markdown;
       if (existing)
         makeWritable(vault, vaultPath);
       await vault.adapter.write(vaultPath, content);
       makeReadOnly(vault, vaultPath);
+      const labels = await labelsPromise;
+      manifestData.set(page.id, { labels, lastSynced });
       syncedCount++;
     } catch (err) {
       failedCount++;
       console.warn(`${LOG2} failed to sync page ${page.id} "${page.title}":`, err);
+      await labelsPromise.catch(() => void 0);
     }
   });
   await removeOrphanedFiles(vault, syncFolderPath, expectedPaths);
+  const manifestPath = `${syncFolderPath}/manifest.json`;
+  try {
+    const manifest = buildManifest(
+      tree,
+      pathMap,
+      manifestData,
+      spaceKey,
+      spaceName,
+      homePageId,
+      confluenceBaseUrl
+    );
+    const manifestJson = JSON.stringify(manifest, null, 2) + "\n";
+    if (await vault.adapter.exists(manifestPath)) {
+      makeWritable(vault, manifestPath);
+    }
+    await vault.adapter.write(manifestPath, manifestJson);
+    makeReadOnly(vault, manifestPath);
+    console.log(`${LOG2} manifest written: ${manifestPath} (${manifest.pageCount} pages)`);
+  } catch (err) {
+    console.warn(`${LOG2} failed to write manifest at ${manifestPath}:`, err);
+  }
   console.log(
     `${LOG2} done \u2014 ${syncedCount} updated, ${skippedCount} skipped (unchanged), ${failedCount} failed`
   );

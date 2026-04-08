@@ -171,18 +171,21 @@ async function runWithConcurrency<T>(
   );
 }
 
+function pageUrl(baseUrl: string, spaceKey: string, pageId: string): string {
+  return `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}`;
+}
+
 function buildFrontmatter(
   pageId: string,
   baseUrl: string,
   spaceKey: string,
-  title: string
+  title: string,
+  lastSynced: string
 ): string {
-  const url = `${baseUrl}/wiki/spaces/${spaceKey}/pages/${pageId}`;
-  const lastSynced = new Date().toISOString();
   return [
     '---',
     `confluence-id: "${pageId}"`,
-    `confluence-url: "${url}"`,
+    `confluence-url: "${pageUrl(baseUrl, spaceKey, pageId)}"`,
     `confluence-title: "${title.replace(/"/g, '\\"')}"`,
     `space: "${spaceKey}"`,
     `last-synced: "${lastSynced}"`,
@@ -190,6 +193,80 @@ function buildFrontmatter(
     '---',
     '',
   ].join('\n');
+}
+
+interface ManifestPageNode {
+  id: string;
+  title: string;
+  vaultPath: string;
+  confluenceUrl: string;
+  modifiedAt: string;
+  lastSynced: string;
+  labels: string[];
+  children: ManifestPageNode[];
+}
+
+interface Manifest {
+  spaceKey: string;
+  spaceName: string | null;
+  homePageId: string | null;
+  baseUrl: string;
+  generatedAt: string;
+  pageCount: number;
+  tree: ManifestPageNode[];
+}
+
+function buildManifest(
+  tree: PageNode[],
+  pathMap: Map<string, string>,
+  manifestData: Map<string, { labels: string[]; lastSynced: string }>,
+  spaceKey: string,
+  spaceName: string | null,
+  homePageId: string | null,
+  baseUrl: string
+): Manifest {
+  function walk(nodes: PageNode[]): ManifestPageNode[] {
+    const out: ManifestPageNode[] = [];
+    for (const node of nodes) {
+      const meta = manifestData.get(node.page.id);
+      // Skip pages whose body sync failed — they have no manifest entry.
+      // Their children are still emitted (re-parented to this level) so the
+      // tree doesn't lose downstream pages just because an ancestor errored.
+      const children = walk(node.children);
+      if (!meta) {
+        out.push(...children);
+        continue;
+      }
+      out.push({
+        id: node.page.id,
+        title: node.page.title,
+        vaultPath: pathMap.get(node.page.id) ?? '',
+        confluenceUrl: pageUrl(baseUrl, spaceKey, node.page.id),
+        modifiedAt: node.page.versionDate,
+        lastSynced: meta.lastSynced,
+        labels: meta.labels,
+        children,
+      });
+    }
+    return out;
+  }
+
+  const treeNodes = walk(tree);
+  function count(nodes: ManifestPageNode[]): number {
+    let n = 0;
+    for (const node of nodes) n += 1 + count(node.children);
+    return n;
+  }
+
+  return {
+    spaceKey,
+    spaceName,
+    homePageId,
+    baseUrl,
+    generatedAt: new Date().toISOString(),
+    pageCount: count(treeNodes),
+    tree: treeNodes,
+  };
 }
 
 export async function runSyncForTarget(
@@ -213,11 +290,12 @@ export async function runSyncForTarget(
   const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
   const imageDownloader = new ImageDownloader(client, vault, maxImageDownloadSizeKb);
 
-  // 1. Fetch pages (with version dates) and home page ID in parallel
+  // 1. Fetch pages (with version dates), home page ID, and space name in parallel
   console.log(`${LOG} fetching page list…`);
-  const [pages, homePageId] = await Promise.all([
+  const [pages, homePageId, spaceName] = await Promise.all([
     client.getSpacePages(spaceKey),
     client.getSpaceHomePageId(spaceKey),
+    client.checkSpaceAccess(spaceKey).catch(() => null),
   ]);
   console.log(`${LOG} ${pages.length} pages fetched, home page ID: ${homePageId ?? 'unknown'}`);
 
@@ -253,6 +331,11 @@ export async function runSyncForTarget(
   let failedCount = 0;
   let completedCount = 0;
 
+  // Per-page metadata accumulated during the sync pass and consumed when
+  // building the manifest. Pages whose body sync fails outright are omitted
+  // so consumers can rely on every entry having a valid lastSynced.
+  const manifestData = new Map<string, { labels: string[]; lastSynced: string }>();
+
   new Notice(`${spaceKey}: ${filteredPages.length} pages found, syncing…`);
   console.log(`${LOG} syncing ${filteredPages.length} pages with concurrency ${syncConcurrency}`);
 
@@ -270,9 +353,19 @@ export async function runSyncForTarget(
     completedCount++;
     onProgress?.(completedCount, filteredPages.length, page.title);
 
+    // Labels are pulled for every page on every run (they can change without
+    // bumping the page version). Failures degrade to an empty array so the
+    // manifest still gets an entry.
+    const labelsPromise = client.getPageLabels(page.id).catch((err) => {
+      console.warn(`${LOG} failed to fetch labels for ${page.id} "${page.title}":`, err);
+      return [] as string[];
+    });
+
     if (isUpToDate) {
       skippedCount++;
       console.debug(`${LOG} [${i + 1}/${filteredPages.length}] skipping unchanged "${page.title}"`);
+      const labels = await labelsPromise;
+      manifestData.set(page.id, { labels, lastSynced: existing.lastSynced });
       return;
     }
 
@@ -297,21 +390,51 @@ export async function runSyncForTarget(
         adf, page.id, syncFolderPath, imageDownloader, converter
       );
 
-      const content = buildFrontmatter(page.id, confluenceBaseUrl, spaceKey, page.title) + markdown;
+      const lastSynced = new Date().toISOString();
+      const content =
+        buildFrontmatter(page.id, confluenceBaseUrl, spaceKey, page.title, lastSynced) + markdown;
 
       if (existing) makeWritable(vault, vaultPath);
       await vault.adapter.write(vaultPath, content);
       makeReadOnly(vault, vaultPath);
 
+      const labels = await labelsPromise;
+      manifestData.set(page.id, { labels, lastSynced });
       syncedCount++;
     } catch (err) {
       failedCount++;
       console.warn(`${LOG} failed to sync page ${page.id} "${page.title}":`, err);
+      // Drain the labels promise so it can't surface as an unhandled rejection.
+      await labelsPromise.catch(() => undefined);
     }
   });
 
   // 7. Remove files for pages deleted from Confluence
   await removeOrphanedFiles(vault, syncFolderPath, expectedPaths);
+
+  // 8. Write the space manifest. Failures here are logged but never fail the
+  // sync — the .md files are already on disk and that's the load-bearing work.
+  const manifestPath = `${syncFolderPath}/manifest.json`;
+  try {
+    const manifest = buildManifest(
+      tree,
+      pathMap,
+      manifestData,
+      spaceKey,
+      spaceName,
+      homePageId,
+      confluenceBaseUrl
+    );
+    const manifestJson = JSON.stringify(manifest, null, 2) + '\n';
+    if (await vault.adapter.exists(manifestPath)) {
+      makeWritable(vault, manifestPath);
+    }
+    await vault.adapter.write(manifestPath, manifestJson);
+    makeReadOnly(vault, manifestPath);
+    console.log(`${LOG} manifest written: ${manifestPath} (${manifest.pageCount} pages)`);
+  } catch (err) {
+    console.warn(`${LOG} failed to write manifest at ${manifestPath}:`, err);
+  }
 
   console.log(
     `${LOG} done — ${syncedCount} updated, ${skippedCount} skipped (unchanged), ${failedCount} failed`
