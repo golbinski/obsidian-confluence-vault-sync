@@ -4,6 +4,7 @@
   "version": "0.1.0",
   "minAppVersion": "1.4.0",
   "description": "Sync a Confluence Cloud space into a read-only vault folder.",
-  "author": "",
+  "author": "golbinski",
+  "authorUrl": "https://olbinsky.pages.dev",
   "isDesktopOnly": true
 }
