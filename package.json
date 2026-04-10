@@ -5,13 +5,15 @@
   "main": "main.js",
   "scripts": {
     "build": "node esbuild.config.mjs",
-    "dev": "node esbuild.config.mjs dev"
+    "dev": "node esbuild.config.mjs dev",
+    "test": "vitest run",
+    "test:watch": "vitest"
   },
-  "dependencies": {},
   "devDependencies": {
+    "@types/node": "^20.0.0",
+    "esbuild": "^0.20.0",
     "obsidian": "latest",
     "typescript": "^5.0.0",
-    "esbuild": "^0.20.0",
-    "@types/node": "^20.0.0"
+    "vitest": "^4.1.4"
   }
 }
