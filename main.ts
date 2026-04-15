@@ -31,11 +31,11 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
 
     // Ribbon: sync
     this.addRibbonIcon('refresh-cw', 'Sync Confluence', () => {
-      this.syncAll();
+      void this.syncAll();
     });
 
     // Ribbon: changes pane
-    this.addRibbonIcon('git-pull-request', 'Confluence Changes', () => {
+    this.addRibbonIcon('git-pull-request', 'Confluence changes', () => {
       this.openWritebackView();
     });
 
@@ -43,12 +43,12 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     this.addCommand({
       id: 'sync-confluence',
       name: 'Sync Confluence',
-      callback: () => { this.syncAll(); },
+      callback: () => { void this.syncAll(); },
     });
 
     this.addCommand({
       id: 'open-confluence-changes',
-      name: 'Open Confluence Changes',
+      name: 'Open Confluence changes',
       callback: () => { this.openWritebackView(); },
     });
 
@@ -98,13 +98,13 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
   openWritebackView(): void {
     const existing = this.app.workspace.getLeavesOfType(WRITEBACK_VIEW_TYPE);
     if (existing.length > 0) {
-      this.app.workspace.revealLeaf(existing[0]);
+      void this.app.workspace.revealLeaf(existing[0]);
       return;
     }
     const leaf = this.app.workspace.getRightLeaf(false);
     if (leaf) {
-      leaf.setViewState({ type: WRITEBACK_VIEW_TYPE, active: true });
-      this.app.workspace.revealLeaf(leaf);
+      void leaf.setViewState({ type: WRITEBACK_VIEW_TYPE, active: true });
+      void this.app.workspace.revealLeaf(leaf);
     }
   }
 
@@ -118,10 +118,10 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
 
   private validateSettings(): string[] {
     const missing: string[] = [];
-    if (!this.settings.confluenceBaseUrl) missing.push('Confluence Base URL');
-    if (!this.settings.confluenceEmail) missing.push('Confluence Email');
-    if (!this.settings.confluenceApiToken) missing.push('Confluence API Token');
-    if (this.settings.syncTargets.length === 0) missing.push('at least one Sync Target');
+    if (!this.settings.confluenceBaseUrl) missing.push('Confluence base URL');
+    if (!this.settings.confluenceEmail) missing.push('Confluence email');
+    if (!this.settings.confluenceApiToken) missing.push('Confluence API token');
+    if (this.settings.syncTargets.length === 0) missing.push('at least one sync target');
     return missing;
   }
 
@@ -181,7 +181,7 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     }
 
     const missing = this.validateSettings();
-    const settingsOnly = missing.filter((m) => m !== 'at least one Sync Target');
+    const settingsOnly = missing.filter((m) => m !== 'at least one sync target');
     if (settingsOnly.length > 0) {
       new Notice(`Confluence Vault Sync: missing settings — ${settingsOnly.join(', ')}`);
       return;
@@ -221,10 +221,10 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    containerEl.createEl('h2', { text: 'Confluence Vault Sync' });
+    new Setting(containerEl).setName('Confluence vault sync').setHeading();
 
     new Setting(containerEl)
-      .setName('Confluence Base URL')
+      .setName('Confluence base URL')
       .setDesc('e.g. https://yourorg.atlassian.net')
       .addText((text) =>
         text
@@ -237,7 +237,7 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Confluence Email')
+      .setName('Confluence email')
       .setDesc('Your Atlassian account email')
       .addText((text) =>
         text
@@ -250,7 +250,7 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
       );
 
     new Setting(containerEl)
-      .setName('Confluence API Token')
+      .setName('Confluence API token')
       .setDesc('Atlassian API token (stored in plugin data)')
       .addText((text) => {
         text.inputEl.type = 'password';
@@ -305,7 +305,7 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
             this.plugin.settings;
 
           if (!confluenceBaseUrl || !confluenceEmail || !confluenceApiToken) {
-            new Notice('Fill in Base URL, Email, and API Token first.');
+            new Notice('Fill in base URL, email, and API token first.');
             return;
           }
 
@@ -338,7 +338,7 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
       });
 
     // Sync targets section
-    containerEl.createEl('h3', { text: 'Sync Targets' });
+    new Setting(containerEl).setName('Sync targets').setHeading();
 
     const tableContainer = containerEl.createDiv();
     this.renderSyncTargetsTable(tableContainer);
@@ -347,14 +347,12 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
   private renderSyncTargetsTable(container: HTMLElement): void {
     container.empty();
 
-    const table = container.createEl('table');
-    table.style.width = '100%';
-    table.style.borderCollapse = 'collapse';
+    const table = container.createEl('table', { cls: 'cvs-targets-table' });
 
     const thead = table.createEl('thead');
     const headerRow = thead.createEl('tr');
-    headerRow.createEl('th', { text: 'Space Key' });
-    headerRow.createEl('th', { text: 'Vault Folder Path' });
+    headerRow.createEl('th', { text: 'Space key' });
+    headerRow.createEl('th', { text: 'Vault folder path' });
     headerRow.createEl('th', { text: '' });
 
     const tbody = table.createEl('tbody');
@@ -364,40 +362,36 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
       const row = tbody.createEl('tr');
 
       const keyCell = row.createEl('td');
-      const keyInput = keyCell.createEl('input', { type: 'text' });
+      const keyInput = keyCell.createEl('input', { type: 'text', cls: 'cvs-full-width' });
       keyInput.value = target.spaceKey;
       keyInput.placeholder = 'ENG';
-      keyInput.style.width = '100%';
-      keyInput.addEventListener('change', async () => {
+      keyInput.addEventListener('change', () => {
         this.plugin.settings.syncTargets[i].spaceKey = keyInput.value.trim();
-        await this.plugin.saveSettings();
+        void this.plugin.saveSettings();
       });
 
       const pathCell = row.createEl('td');
-      const pathInput = pathCell.createEl('input', { type: 'text' });
+      const pathInput = pathCell.createEl('input', { type: 'text', cls: 'cvs-full-width' });
       pathInput.value = target.syncFolderPath;
       pathInput.placeholder = 'confluence/eng';
-      pathInput.style.width = '100%';
-      pathInput.addEventListener('change', async () => {
+      pathInput.addEventListener('change', () => {
         this.plugin.settings.syncTargets[i].syncFolderPath = pathInput.value.trim();
-        await this.plugin.saveSettings();
+        void this.plugin.saveSettings();
       });
 
       const removeCell = row.createEl('td');
-      const removeBtn = removeCell.createEl('button', { text: '×' });
-      removeBtn.style.cursor = 'pointer';
-      removeBtn.addEventListener('click', async () => {
+      const removeBtn = removeCell.createEl('button', { text: '×', cls: 'cvs-remove-btn' });
+      removeBtn.addEventListener('click', () => {
         this.plugin.settings.syncTargets.splice(i, 1);
-        await this.plugin.saveSettings();
+        void this.plugin.saveSettings();
         this.renderSyncTargetsTable(container);
       });
     }
 
-    const addBtn = container.createEl('button', { text: 'Add sync target' });
-    addBtn.style.marginTop = '8px';
-    addBtn.addEventListener('click', async () => {
+    const addBtn = container.createEl('button', { text: 'Add sync target', cls: 'cvs-add-target-btn' });
+    addBtn.addEventListener('click', () => {
       this.plugin.settings.syncTargets.push({ spaceKey: '', syncFolderPath: '' });
-      await this.plugin.saveSettings();
+      void this.plugin.saveSettings();
       this.renderSyncTargetsTable(container);
     });
   }

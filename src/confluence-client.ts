@@ -117,7 +117,7 @@ export class ConfluenceClient {
       url = next ? `${this.baseUrl}${next}` : null;
     }
 
-    console.log(`${LOG} fetched ${pages.length} pages total for space "${spaceKey}"`);
+    console.debug(`${LOG} fetched ${pages.length} pages total for space "${spaceKey}"`);
     return pages;
   }
 

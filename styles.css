@@ -1,0 +1,109 @@
+/* -------------------------------------------------------------------------
+   Confluence Vault Sync — plugin styles
+   ------------------------------------------------------------------------- */
+
+/* Settings: sync targets table */
+.cvs-targets-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+
+.cvs-full-width {
+  width: 100%;
+}
+
+.cvs-remove-btn {
+  cursor: pointer;
+}
+
+.cvs-add-target-btn {
+  margin-top: 8px;
+}
+
+/* Writeback view: outer container */
+.cvs-view-container {
+  padding: 12px;
+}
+
+/* Writeback view: header row */
+.cvs-view-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 12px;
+}
+
+/* Writeback view: space section */
+.cvs-space-section {
+  margin-bottom: 16px;
+}
+
+/* Writeback view: space key label */
+.cvs-space-label {
+  font-weight: 600;
+  margin-bottom: 6px;
+  opacity: 0.7;
+  font-size: 0.85em;
+  text-transform: uppercase;
+}
+
+/* Writeback view: page row */
+.cvs-page-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 5px 4px;
+  border-radius: 4px;
+  margin-bottom: 2px;
+}
+
+/* Writeback view: left side of page row */
+.cvs-row-left {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+}
+
+/* Writeback view: page title */
+.cvs-page-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.cvs-page-title--dim {
+  opacity: 0.45;
+}
+
+/* Writeback view: right side of page row */
+.cvs-row-right {
+  display: flex;
+  gap: 4px;
+  flex-shrink: 0;
+}
+
+/* Writeback view: dimmed inline label (e.g. "has images") */
+.cvs-dim-label {
+  opacity: 0.45;
+  font-size: 0.8em;
+}
+
+/* Writeback view: small action buttons */
+.cvs-action-btn {
+  padding: 2px 8px;
+  font-size: 0.8em;
+}
+
+/* Conflict modal: button row */
+.cvs-modal-btn-row {
+  display: flex;
+  gap: 8px;
+  margin-top: 16px;
+  justify-content: flex-end;
+}
+
+/* Conflict modal: destructive button */
+.cvs-danger-btn {
+  color: var(--color-red);
+}

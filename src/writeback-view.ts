@@ -4,7 +4,6 @@ import { ConfluenceClient } from './confluence-client';
 import { markdownToAdf } from './markdown-to-adf';
 import {
   extractFrontmatterField,
-  getFullPath,
   isWritable,
   makeReadOnly,
   makeWritable,
@@ -41,7 +40,7 @@ export class WritebackView extends ItemView {
   }
 
   getViewType(): string { return WRITEBACK_VIEW_TYPE; }
-  getDisplayText(): string { return 'Confluence Changes'; }
+  getDisplayText(): string { return 'Confluence changes'; }
   getIcon(): string { return 'git-pull-request'; }
 
   async onOpen(): Promise<void> {
@@ -58,7 +57,6 @@ export class WritebackView extends ItemView {
   // ---------------------------------------------------------------------------
 
   private async scanEntries(): Promise<PageEntry[]> {
-    const vault = this.app.vault;
     const entries: PageEntry[] = [];
 
     for (const target of this.plugin.settings.syncTargets) {
@@ -127,17 +125,13 @@ export class WritebackView extends ItemView {
   private render(entries: PageEntry[]): void {
     const container = this.containerEl.children[1] as HTMLElement;
     container.empty();
-    container.style.padding = '12px';
+    container.addClass('cvs-view-container');
 
     // Header
-    const header = container.createDiv({ cls: 'nav-header' });
-    header.style.display = 'flex';
-    header.style.justifyContent = 'space-between';
-    header.style.alignItems = 'center';
-    header.style.marginBottom = '12px';
-    header.createEl('strong', { text: 'Confluence Changes' });
+    const header = container.createDiv({ cls: 'nav-header cvs-view-header' });
+    header.createEl('strong', { text: 'Confluence changes' });
     const refreshBtn = header.createEl('button', { text: '⟳ Refresh' });
-    refreshBtn.addEventListener('click', () => this.refresh());
+    refreshBtn.addEventListener('click', () => { void this.refresh(); });
 
     if (entries.length === 0) {
       container.createEl('p', {
@@ -156,16 +150,8 @@ export class WritebackView extends ItemView {
     }
 
     for (const [spaceKey, pages] of bySpace) {
-      const section = container.createDiv();
-      section.style.marginBottom = '16px';
-
-      const sectionHeader = section.createEl('div');
-      sectionHeader.style.fontWeight = '600';
-      sectionHeader.style.marginBottom = '6px';
-      sectionHeader.style.opacity = '0.7';
-      sectionHeader.style.fontSize = '0.85em';
-      sectionHeader.style.textTransform = 'uppercase';
-      sectionHeader.setText(spaceKey);
+      const section = container.createDiv({ cls: 'cvs-space-section' });
+      section.createEl('div', { cls: 'cvs-space-label', text: spaceKey });
 
       for (const entry of pages) {
         this.renderRow(section, entry);
@@ -174,54 +160,36 @@ export class WritebackView extends ItemView {
   }
 
   private renderRow(container: HTMLElement, entry: PageEntry): void {
-    const row = container.createDiv();
-    row.style.display = 'flex';
-    row.style.alignItems = 'center';
-    row.style.justifyContent = 'space-between';
-    row.style.padding = '5px 4px';
-    row.style.borderRadius = '4px';
-    row.style.marginBottom = '2px';
+    const row = container.createDiv({ cls: 'cvs-page-row' });
 
-    const left = row.createDiv();
-    left.style.display = 'flex';
-    left.style.alignItems = 'center';
-    left.style.gap = '6px';
-    left.style.overflow = 'hidden';
+    const left = row.createDiv({ cls: 'cvs-row-left' });
 
     const { icon, dim } = stateDecoration(entry.state);
     left.createSpan({ text: icon });
 
-    const titleEl = left.createSpan({ text: entry.title });
-    titleEl.style.overflow = 'hidden';
-    titleEl.style.textOverflow = 'ellipsis';
-    titleEl.style.whiteSpace = 'nowrap';
-    if (dim) titleEl.style.opacity = '0.45';
+    const titleEl = left.createSpan({ text: entry.title, cls: 'cvs-page-title' });
+    if (dim) titleEl.addClass('cvs-page-title--dim');
 
-    const right = row.createDiv();
-    right.style.display = 'flex';
-    right.style.gap = '4px';
-    right.style.flexShrink = '0';
+    const right = row.createDiv({ cls: 'cvs-row-right' });
 
     switch (entry.state.kind) {
       case 'locked':
-        this.addButton(right, 'Unlock', () => this.unlock(entry));
+        this.addButton(right, 'Unlock', () => { void this.unlock(entry); });
         break;
 
       case 'has-images': {
-        const label = right.createSpan({ text: 'has images' });
-        label.style.opacity = '0.45';
-        label.style.fontSize = '0.8em';
+        const label = right.createSpan({ text: 'has images', cls: 'cvs-dim-label' });
         label.title = 'Pages with images cannot be edited locally (image upload not supported)';
         break;
       }
 
       case 'unlocked':
-        this.addButton(right, 'Relock', () => this.relock(entry));
+        this.addButton(right, 'Relock', () => { void this.relock(entry); });
         break;
 
       case 'modified':
-        this.addButton(right, 'Push', () => this.push(entry));
-        this.addButton(right, 'Relock', () => this.relock(entry));
+        this.addButton(right, 'Push', () => { void this.push(entry); });
+        this.addButton(right, 'Relock', () => { void this.relock(entry); });
         break;
 
       case 'pushing': {
@@ -233,9 +201,7 @@ export class WritebackView extends ItemView {
   }
 
   private addButton(container: HTMLElement, label: string, onClick: () => void): HTMLButtonElement {
-    const btn = container.createEl('button', { text: label });
-    btn.style.padding = '2px 8px';
-    btn.style.fontSize = '0.8em';
+    const btn = container.createEl('button', { text: label, cls: 'cvs-action-btn' });
     btn.addEventListener('click', onClick);
     return btn;
   }
@@ -390,11 +356,7 @@ class ConflictModal extends Modal {
       text: 'Force pushing will overwrite the Confluence version.',
     });
 
-    const btnRow = contentEl.createDiv();
-    btnRow.style.display = 'flex';
-    btnRow.style.gap = '8px';
-    btnRow.style.marginTop = '16px';
-    btnRow.style.justifyContent = 'flex-end';
+    const btnRow = contentEl.createDiv({ cls: 'cvs-modal-btn-row' });
 
     const cancelBtn = btnRow.createEl('button', { text: 'Cancel' });
     cancelBtn.addEventListener('click', () => {
@@ -402,8 +364,7 @@ class ConflictModal extends Modal {
       this.close();
     });
 
-    const forceBtn = btnRow.createEl('button', { text: 'Force Push' });
-    forceBtn.style.color = 'var(--color-red)';
+    const forceBtn = btnRow.createEl('button', { text: 'Force push', cls: 'cvs-danger-btn' });
     forceBtn.addEventListener('click', () => {
       this.resolve(true);
       this.close();

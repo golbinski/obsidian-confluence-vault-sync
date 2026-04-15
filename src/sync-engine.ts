@@ -4,12 +4,10 @@ import { ConfluenceClient, type ConfluencePage } from './confluence-client';
 import { AdfConverter } from './adf-converter';
 import { ImageDownloader } from './image-downloader';
 import {
-  getFullPath,
   makeWritable,
   makeReadOnly,
   extractFrontmatterField,
 } from './fs-utils';
-import * as fs from 'fs';
 
 const LOG = '[Confluence Vault Sync]';
 
@@ -65,10 +63,6 @@ function flattenTree(nodes: PageNode[]): ConfluencePage[] {
   return result;
 }
 
-type VaultAdapter = {
-  rmdir(p: string, recursive: boolean): Promise<void>;
-};
-
 /** Scan all .md files under a vault path and return a map of pageId → {path, lastSynced}. */
 async function scanExistingFiles(
   vault: Vault,
@@ -119,21 +113,18 @@ async function removeOrphanedFiles(
 
     for (const file of listed.files) {
       if (file.endsWith('.md') && !expectedPaths.has(file)) {
-        console.log(`${LOG} removing orphaned file: ${file}`);
+        console.debug(`${LOG} removing orphaned file: ${file}`);
         makeWritable(vault, file);
         await vault.adapter.remove(file);
       }
     }
 
-    let allChildrenGone = true;
     for (const folder of listed.folders) {
       const isEmpty = await cleanDir(folder);
       if (isEmpty && folder !== `${syncFolderPath}/attachments`) {
         try {
           await (vault.adapter as unknown as { rmdir(p: string, r: boolean): Promise<void> }).rmdir(folder, true);
         } catch { /* ignore */ }
-      } else {
-        allChildrenGone = false;
       }
     }
 
@@ -284,20 +275,20 @@ export async function runSyncForTarget(
     syncConcurrency,
   } = settings;
 
-  console.log(`${LOG} starting sync for space "${spaceKey}" → "${syncFolderPath}"`);
+  console.debug(`${LOG} starting sync for space "${spaceKey}" → "${syncFolderPath}"`);
   new Notice(`Syncing ${spaceKey}…`);
 
   const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
   const imageDownloader = new ImageDownloader(client, vault, maxImageDownloadSizeKb);
 
   // 1. Fetch pages (with version dates), home page ID, and space name in parallel
-  console.log(`${LOG} fetching page list…`);
+  console.debug(`${LOG} fetching page list…`);
   const [pages, homePageId, spaceName] = await Promise.all([
     client.getSpacePages(spaceKey),
     client.getSpaceHomePageId(spaceKey),
     client.checkSpaceAccess(spaceKey).catch(() => null),
   ]);
-  console.log(`${LOG} ${pages.length} pages fetched, home page ID: ${homePageId ?? 'unknown'}`);
+  console.debug(`${LOG} ${pages.length} pages fetched, home page ID: ${homePageId ?? 'unknown'}`);
 
   // 2. Build tree rooted at space home page
   const fullTree = buildTree(pages);
@@ -306,7 +297,7 @@ export async function runSyncForTarget(
     const homeRoot = fullTree.find((n) => n.page.id === homePageId);
     if (homeRoot) {
       tree = [homeRoot];
-      console.log(`${LOG} rooted tree at home page "${homeRoot.page.title}"`);
+      console.debug(`${LOG} rooted tree at home page "${homeRoot.page.title}"`);
     } else {
       console.warn(`${LOG} home page ${homePageId} not found — syncing all roots`);
     }
@@ -320,7 +311,7 @@ export async function runSyncForTarget(
 
   // 4. Scan existing files to find what's already synced and up-to-date
   const existingFiles = await scanExistingFiles(vault, syncFolderPath);
-  console.log(`${LOG} ${existingFiles.size} existing synced files found`);
+  console.debug(`${LOG} ${existingFiles.size} existing synced files found`);
 
   // 5. Ensure sync folder exists
   try { await vault.adapter.mkdir(syncFolderPath); } catch { /* exists */ }
@@ -337,7 +328,7 @@ export async function runSyncForTarget(
   const manifestData = new Map<string, { labels: string[]; lastSynced: string }>();
 
   new Notice(`${spaceKey}: ${filteredPages.length} pages found, syncing…`);
-  console.log(`${LOG} syncing ${filteredPages.length} pages with concurrency ${syncConcurrency}`);
+  console.debug(`${LOG} syncing ${filteredPages.length} pages with concurrency ${syncConcurrency}`);
 
   // 6. Sync pages in parallel with a concurrency cap
   await runWithConcurrency(filteredPages, syncConcurrency, async (page, i) => {
@@ -369,12 +360,12 @@ export async function runSyncForTarget(
       return;
     }
 
-    console.log(`${LOG} [${i + 1}/${filteredPages.length}] writing "${page.title}" → ${vaultPath}`);
+    console.debug(`${LOG} [${i + 1}/${filteredPages.length}] writing "${page.title}" → ${vaultPath}`);
 
     try {
       // If the page moved to a new path, remove the old file
       if (existing && existing.path !== vaultPath) {
-        console.log(`${LOG} page "${page.title}" moved: ${existing.path} → ${vaultPath}`);
+        console.debug(`${LOG} page "${page.title}" moved: ${existing.path} → ${vaultPath}`);
         makeWritable(vault, existing.path);
         await vault.adapter.remove(existing.path);
       }
@@ -431,12 +422,12 @@ export async function runSyncForTarget(
     }
     await vault.adapter.write(manifestPath, manifestJson);
     makeReadOnly(vault, manifestPath);
-    console.log(`${LOG} manifest written: ${manifestPath} (${manifest.pageCount} pages)`);
+    console.debug(`${LOG} manifest written: ${manifestPath} (${manifest.pageCount} pages)`);
   } catch (err) {
     console.warn(`${LOG} failed to write manifest at ${manifestPath}:`, err);
   }
 
-  console.log(
+  console.debug(
     `${LOG} done — ${syncedCount} updated, ${skippedCount} skipped (unchanged), ${failedCount} failed`
   );
 
