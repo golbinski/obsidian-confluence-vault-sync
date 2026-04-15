@@ -3,7 +3,7 @@
   "name": "Confluence Vault Sync",
   "version": "0.1.0",
   "minAppVersion": "1.4.0",
-  "description": "Sync a Confluence Cloud space into a read-only vault folder.",
+  "description": "Synchronizes a Confluence Cloud space into a local vault folder.",
   "author": "golbinski",
   "authorUrl": "https://olbinsky.pages.dev",
   "isDesktopOnly": true
