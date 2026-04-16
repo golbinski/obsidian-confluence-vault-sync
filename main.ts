@@ -265,14 +265,14 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
       return;
     }
 
-    let pageId: string | null = null;
+    let rawContent: string;
     try {
-      const content = await this.app.vault.adapter.read(filePath);
-      pageId = extractFrontmatterField(content, 'confluence-id');
+      rawContent = await this.app.vault.adapter.read(filePath);
     } catch {
       new Notice('Could not read file.');
       return;
     }
+    const pageId = extractFrontmatterField(rawContent, 'confluence-id');
     if (!pageId) {
       new Notice('This file is not a managed Confluence page.');
       return;

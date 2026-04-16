@@ -7,11 +7,17 @@
     "build": "node esbuild.config.mjs",
     "dev": "node esbuild.config.mjs dev",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "lint": "eslint src/**/*.ts main.ts"
   },
   "devDependencies": {
+    "@eslint/js": "^10.0.1",
     "@types/node": "^20.0.0",
+    "@typescript-eslint/eslint-plugin": "^8.58.2",
+    "@typescript-eslint/parser": "^8.58.2",
     "esbuild": "^0.28.0",
+    "eslint": "^10.2.0",
+    "globals": "^17.5.0",
     "obsidian": "latest",
     "typescript": "^5.0.0",
     "vitest": "^4.1.4"
