@@ -5,11 +5,13 @@ An [Obsidian](https://obsidian.md) plugin that syncs one or more Confluence Clou
 ## Features
 
 - **Pull from Confluence** — fetches an entire space hierarchy and converts Atlassian Document Format (ADF) to Markdown, preserving page nesting as folders.
+- **Granular pull** — right-click any subfolder to pull only that subtree, or right-click a single `.md` file to pull just that page, without triggering a full space sync.
+- **Resync gate** — a full-space sync is blocked if any file in that space is unlocked, preventing accidental overwrites of in-progress edits.
 - **Incremental syncs** — skips pages that have not changed since the last sync, using Confluence version timestamps.
 - **Image attachments** — downloads inline images below a configurable size limit into an `attachments/` folder.
 - **Read-only enforcement** — synced files are locked; Obsidian edits are reverted automatically until you explicitly unlock a file.
-- **Write-back (Confluence Changes pane)** — unlock a page, edit it locally, and push the Markdown back to Confluence as ADF. Detects conflicts when the remote page was updated after your last sync.
-- **Manifest** — writes a `manifest.json` inside each sync folder with the full page tree, labels, vault paths, and Confluence URLs.
+- **Write-back (Confluence Changes pane)** — unlock a page, edit it locally, and push the Markdown back to Confluence as ADF. Uses three-way merge to preserve concurrent remote edits; conflicts are written as standard diff3 markers into the local file for manual resolution.
+- **Manifest** — writes a `manifest.json` inside each sync folder describing the vault state: page tree, labels, vault paths, and Confluence URLs. Updated incrementally on granular pulls.
 - **Multiple sync targets** — map any number of Confluence spaces to separate vault folders.
 - **Parallel sync** — configurable concurrency for faster syncs on large spaces.
 
@@ -58,16 +60,21 @@ Use **Test connection** to verify your credentials and confirm access to each co
 
 - Click the **refresh** ribbon icon, or run the command **Sync Confluence** from the command palette.
 - Right-click any configured sync folder in the file explorer and choose **Pull Confluence** to sync only that space.
+- Right-click any **subfolder** inside a sync folder and choose **Pull this folder** to sync only that subtree.
+- Right-click any synced **`.md` file** and choose **Pull this page** to refresh only that single page.
+
+> **Note:** A full-space sync is blocked if any file in that space is currently unlocked. Use granular pull (subfolder or single page) to pull updates without affecting your in-progress edits.
 
 Synced files include YAML frontmatter with `confluence-id`, `confluence-url`, `confluence-title`, `space`, `last-synced`, and `read-only: true`.
 
 ### Writing back to Confluence
 
 1. Open the **Confluence Changes** pane via the ribbon icon or the **Open Confluence Changes** command.
-2. Click **Unlock** next to a page to make it editable.
+2. Click **Unlock** next to a page to make it editable. The plugin saves a snapshot of the page body at this point to use as the merge base.
 3. Edit the file in Obsidian.
 4. Return to the pane and click **Push** to send your changes back to Confluence.
-   - If the page was updated remotely since your last sync, a conflict dialog lets you choose to force-push or cancel.
+   - The plugin performs a three-way merge between your edits, the snapshot taken at unlock time, and the current remote content. If the remote page has not changed, your edits are pushed as-is.
+   - If there are conflicting edits, standard diff3 conflict markers (`<<<<<<< local` / `=======` / `>>>>>>> confluence`) are written into the local file. Resolve the markers manually and click **Push** again.
 5. Click **Relock** to restore read-only protection without pushing.
 
 > **Note:** Pages that contain embedded images cannot be pushed back to Confluence (image upload is not supported).
