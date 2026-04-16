@@ -197,12 +197,13 @@ export class ConfluenceClient {
     return labels;
   }
 
-  /** Returns the current version number and last-updated timestamp of a page. */
-  async getPageCurrentVersion(pageId: string): Promise<{ version: number; updatedAt: string }> {
+  /** Returns the current version number, last-updated timestamp, and title of a page. */
+  async getPageCurrentVersion(pageId: string): Promise<{ version: number; updatedAt: string; title: string }> {
     const data = await this.request<{
+      title: string;
       version: { number: number; createdAt: string };
     }>(`${this.baseUrl}/wiki/api/v2/pages/${pageId}`);
-    return { version: data.version.number, updatedAt: data.version.createdAt };
+    return { version: data.version.number, updatedAt: data.version.createdAt, title: data.title };
   }
 
   /** Updates a page's title and body in Confluence. currentVersion is the version to base off. */

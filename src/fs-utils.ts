@@ -40,3 +40,26 @@ export function stripFrontmatter(content: string): string {
   const match = content.match(/^---\n[\s\S]*?\n---\n/);
   return match ? content.slice(match[0].length) : content;
 }
+
+/** Returns paths of all writable (unlocked) .md files under folderPath. */
+export async function findUnlockedFiles(vault: Vault, folderPath: string): Promise<string[]> {
+  const result: string[] = [];
+
+  async function scan(dir: string): Promise<void> {
+    let listed;
+    try {
+      listed = await vault.adapter.list(dir);
+    } catch {
+      return;
+    }
+    for (const file of listed.files) {
+      if (file.endsWith('.md') && isWritable(vault, file)) result.push(file);
+    }
+    for (const folder of listed.folders) {
+      await scan(folder);
+    }
+  }
+
+  await scan(folderPath);
+  return result;
+}

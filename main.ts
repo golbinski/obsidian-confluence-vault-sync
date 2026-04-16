@@ -5,6 +5,7 @@ import {
   Plugin,
   PluginSettingTab,
   Setting,
+  TFile,
   TFolder,
 } from 'obsidian';
 import {
@@ -12,9 +13,22 @@ import {
   type ConfluenceVaultSyncSettings,
   type SyncTarget,
 } from './src/settings';
-import { runSyncForTarget } from './src/sync-engine';
+import { runSyncForTarget, runPagePull, type PullScope } from './src/sync-engine';
 import { WritebackView, WRITEBACK_VIEW_TYPE } from './src/writeback-view';
-import { isWritable } from './src/fs-utils';
+import { isWritable, findUnlockedFiles, extractFrontmatterField } from './src/fs-utils';
+
+/** Returns the sync target that owns filePath, or null if unmanaged. */
+function findOwningTarget(filePath: string, syncTargets: SyncTarget[]): SyncTarget | null {
+  for (const target of syncTargets) {
+    if (
+      filePath === target.syncFolderPath ||
+      filePath.startsWith(target.syncFolderPath + '/')
+    ) {
+      return target;
+    }
+  }
+  return null;
+}
 
 export default class ConfluenceVaultSyncPlugin extends Plugin {
   settings!: ConfluenceVaultSyncSettings;
@@ -55,21 +69,32 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     // Settings tab
     this.addSettingTab(new ConfluenceVaultSyncSettingTab(this.app, this));
 
-    // Folder context menu
+    // Context menu for any folder or .md file inside a managed sync target
     this.registerEvent(
       this.app.workspace.on('file-menu', (menu, file) => {
+        const target = findOwningTarget(file.path, this.settings.syncTargets);
+        if (!target) return;
+
         if (file instanceof TFolder) {
-          const target = this.settings.syncTargets.find(
-            (t) => t.syncFolderPath === file.path
-          );
-          if (target) {
-            menu.addItem((item) => {
-              item
-                .setTitle('Pull confluence')
-                .setIcon('refresh-cw')
-                .onClick(() => this.syncTarget(target));
-            });
-          }
+          const isRoot = file.path === target.syncFolderPath;
+          menu.addItem((item) => {
+            item
+              .setTitle(isRoot ? 'Pull confluence' : 'Pull this folder')
+              .setIcon('refresh-cw')
+              .onClick(() => {
+                const scope: PullScope = isRoot
+                  ? { kind: 'space' }
+                  : { kind: 'subtree', vaultPath: file.path };
+                void this.syncTarget(target, scope);
+              });
+          });
+        } else if (file instanceof TFile && file.extension === 'md') {
+          menu.addItem((item) => {
+            item
+              .setTitle('Pull this page')
+              .setIcon('refresh-cw')
+              .onClick(() => { void this.pullPage(target, file.path); });
+          });
         }
       })
     );
@@ -150,7 +175,17 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     const targets = this.settings.syncTargets;
 
     try {
+      const skippedSpaces: string[] = [];
       for (const target of targets) {
+        const unlocked = await findUnlockedFiles(this.app.vault, target.syncFolderPath);
+        if (unlocked.length > 0) {
+          new Notice(
+            `${target.spaceKey}: ${unlocked.length} unlocked page${unlocked.length !== 1 ? 's' : ''} — push or relock before syncing`,
+            8000
+          );
+          skippedSpaces.push(target.spaceKey);
+          continue;
+        }
         this.setStatus(`↻ Syncing ${target.spaceKey}…`);
         const count = await runSyncForTarget(
           target,
@@ -162,8 +197,10 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
         );
         totalPages += count;
       }
+      const synced = targets.length - skippedSpaces.length;
       new Notice(
-        `Sync complete — ${targets.length} space${targets.length !== 1 ? 's' : ''}, ${totalPages} pages synced`
+        `Sync complete — ${synced} space${synced !== 1 ? 's' : ''}, ${totalPages} pages synced` +
+        (skippedSpaces.length > 0 ? ` (${skippedSpaces.join(', ')} skipped)` : '')
       );
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -174,7 +211,7 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     }
   }
 
-  async syncTarget(target: SyncTarget): Promise<void> {
+  async syncTarget(target: SyncTarget, scope: PullScope = { kind: 'space' }): Promise<void> {
     if (this.syncInProgress) {
       new Notice('Confluence vault sync: sync already in progress');
       return;
@@ -187,6 +224,19 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
       return;
     }
 
+    // Unlock gate: scoped to the pull target
+    const unlocked = scope.kind === 'space'
+      ? await findUnlockedFiles(this.app.vault, target.syncFolderPath)
+      : await findUnlockedFiles(this.app.vault, scope.vaultPath);
+
+    if (unlocked.length > 0) {
+      new Notice(
+        `${unlocked.length} unlocked page${unlocked.length !== 1 ? 's' : ''} — push or relock before pulling`,
+        8000
+      );
+      return;
+    }
+
     this.syncInProgress = true;
     try {
       this.setStatus(`↻ Syncing ${target.spaceKey}…`);
@@ -196,12 +246,57 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
         this.app.vault,
         (current, total, label) => {
           this.setStatus(`↻ ${target.spaceKey} ${current}/${total} — ${label}`);
-        }
+        },
+        scope
       );
       new Notice(`Sync complete — ${target.spaceKey}: ${count} pages synced`);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new Notice(`Sync failed: ${message}`);
+    } finally {
+      this.syncInProgress = false;
+      this.clearStatus();
+    }
+  }
+
+  private async pullPage(target: SyncTarget, filePath: string): Promise<void> {
+    if (this.syncInProgress) {
+      new Notice('Confluence vault sync: sync already in progress');
+      return;
+    }
+
+    let pageId: string | null = null;
+    try {
+      const content = await this.app.vault.adapter.read(filePath);
+      pageId = extractFrontmatterField(content, 'confluence-id');
+    } catch {
+      new Notice('Could not read file.');
+      return;
+    }
+    if (!pageId) {
+      new Notice('This file is not a managed Confluence page.');
+      return;
+    }
+
+    if (isWritable(this.app.vault, filePath)) {
+      new Notice('This page is unlocked — push or relock before pulling', 8000);
+      return;
+    }
+
+    const missing = this.validateSettings().filter((m) => m !== 'at least one sync target');
+    if (missing.length > 0) {
+      new Notice(`Confluence Vault Sync: missing settings — ${missing.join(', ')}`);
+      return;
+    }
+
+    this.syncInProgress = true;
+    try {
+      this.setStatus(`↻ Pulling page…`);
+      await runPagePull(pageId, filePath, target, this.settings, this.app.vault);
+      new Notice('Page pulled from Confluence.');
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      new Notice(`Pull failed: ${message}`);
     } finally {
       this.syncInProgress = false;
       this.clearStatus();
