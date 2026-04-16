@@ -130,7 +130,7 @@ export class WritebackView extends ItemView {
     // Header
     const header = container.createDiv({ cls: 'nav-header cvs-view-header' });
     header.createEl('strong', { text: 'Confluence changes' });
-    const refreshBtn = header.createEl('button', { text: '⟳ Refresh' });
+    const refreshBtn = header.createEl('button', { text: 'Refresh' });
     refreshBtn.addEventListener('click', () => { void this.refresh(); });
 
     if (entries.length === 0) {
@@ -353,7 +353,7 @@ class ConflictModal extends Modal {
       text: `"${this.title}" was updated in Confluence on ${fmtDate(this.remoteUpdatedAt)}, after your last sync on ${fmtDate(this.lastSynced)}.`,
     });
     contentEl.createEl('p', {
-      text: 'Force pushing will overwrite the Confluence version.',
+      text: 'Force pushing will overwrite the remote version.',
     });
 
     const btnRow = contentEl.createDiv({ cls: 'cvs-modal-btn-row' });

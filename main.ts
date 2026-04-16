@@ -30,7 +30,7 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     this.registerView(WRITEBACK_VIEW_TYPE, (leaf) => new WritebackView(leaf, this));
 
     // Ribbon: sync
-    this.addRibbonIcon('refresh-cw', 'Sync Confluence', () => {
+    this.addRibbonIcon('refresh-cw', 'Sync confluence', () => {
       void this.syncAll();
     });
 
@@ -42,13 +42,13 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     // Commands
     this.addCommand({
       id: 'sync-confluence',
-      name: 'Sync Confluence',
+      name: 'Sync confluence',
       callback: () => { void this.syncAll(); },
     });
 
     this.addCommand({
       id: 'open-confluence-changes',
-      name: 'Open Confluence changes',
+      name: 'Open confluence changes',
       callback: () => { this.openWritebackView(); },
     });
 
@@ -65,7 +65,7 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
           if (target) {
             menu.addItem((item) => {
               item
-                .setTitle('Pull Confluence')
+                .setTitle('Pull confluence')
                 .setIcon('refresh-cw')
                 .onClick(() => this.syncTarget(target));
             });
@@ -86,7 +86,7 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
         // If the file is writable, the user unlocked it intentionally — don't revert
         if (isWritable(this.app.vault, file.path)) return;
 
-        new Notice('This file is managed by Confluence Vault Sync and cannot be edited.');
+        new Notice('This file is managed by Confluence vault sync and cannot be edited.');
         this.app.vault.adapter
           .read(file.path)
           .then((content) => this.app.vault.adapter.write(file.path, content))
@@ -135,7 +135,7 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
 
   async syncAll(): Promise<void> {
     if (this.syncInProgress) {
-      new Notice('Confluence Vault Sync: sync already in progress');
+      new Notice('Confluence vault sync: sync already in progress');
       return;
     }
 
@@ -176,7 +176,7 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
 
   async syncTarget(target: SyncTarget): Promise<void> {
     if (this.syncInProgress) {
-      new Notice('Confluence Vault Sync: sync already in progress');
+      new Notice('Confluence vault sync: sync already in progress');
       return;
     }
 
@@ -221,8 +221,6 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
 
-    new Setting(containerEl).setName('Confluence vault sync').setHeading();
-
     new Setting(containerEl)
       .setName('Confluence base URL')
       .setDesc('e.g. https://yourorg.atlassian.net')
@@ -238,7 +236,7 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Confluence email')
-      .setDesc('Your Atlassian account email')
+      .setDesc('Your account email')
       .addText((text) =>
         text
           .setPlaceholder('you@example.com')
@@ -264,7 +262,7 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
       });
 
     new Setting(containerEl)
-      .setName('Max image download size (KB)')
+      .setName('Max image download size in KB')
       .setDesc('Images at or below this size are downloaded locally')
       .addText((text) =>
         text
@@ -281,7 +279,7 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
 
     new Setting(containerEl)
       .setName('Sync concurrency')
-      .setDesc('Number of pages fetched in parallel (1–20). Higher values are faster but may hit Confluence rate limits.')
+      .setDesc('Number of pages fetched in parallel (1–20). Higher values are faster but may hit confluence rate limits.')
       .addSlider((slider) =>
         slider
           .setLimits(1, 20, 1)
