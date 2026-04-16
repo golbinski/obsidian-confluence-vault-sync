@@ -25,13 +25,18 @@ An [Obsidian](https://obsidian.md) plugin that syncs one or more Confluence Clou
 
 This plugin is not yet listed in the Obsidian community plugin browser. Install it manually:
 
-1. Build the plugin:
-   ```bash
+1. Download `confluence-vault-sync.zip` from the [latest release](../../releases/latest).
+2. Unzip it into `<vault>/.obsidian/plugins/confluence-vault-sync/`.
+3. In Obsidian, go to **Settings → Community plugins**, enable community plugins if prompted, and toggle **Confluence Vault Sync** on.
+
+Alternatively, build from source:
+
+1. ```bash
    npm install
    npm run build
    ```
-2. Copy `main.js` and `manifest.json` into `<vault>/.obsidian/plugins/confluence-vault-sync/`.
-3. In Obsidian, go to **Settings → Community plugins**, enable community plugins if prompted, and toggle **Confluence Vault Sync** on.
+2. Copy `main.js`, `manifest.json`, and `styles.css` into `<vault>/.obsidian/plugins/confluence-vault-sync/`.
+3. Enable the plugin as above.
 
 ## Configuration
 
