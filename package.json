@@ -15,5 +15,8 @@
     "obsidian": "latest",
     "typescript": "^5.0.0",
     "vitest": "^4.1.4"
+  },
+  "dependencies": {
+    "node-diff3": "^3.2.0"
   }
 }

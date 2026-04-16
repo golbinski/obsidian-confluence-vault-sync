@@ -190,7 +190,7 @@ function buildFrontmatter(
   ].join('\n');
 }
 
-interface ManifestPageNode {
+export interface ManifestPageNode {
   id: string;
   title: string;
   vaultPath: string;
@@ -201,7 +201,7 @@ interface ManifestPageNode {
   children: ManifestPageNode[];
 }
 
-interface Manifest {
+export interface Manifest {
   spaceKey: string;
   spaceName: string | null;
   homePageId: string | null;
@@ -318,7 +318,7 @@ function updateManifestNode(
 }
 
 /** Builds a pageId → vaultPath map from an existing manifest. */
-function buildPathMapFromManifest(manifest: Manifest): Map<string, string> {
+export function buildPathMapFromManifest(manifest: Manifest): Map<string, string> {
   const map = new Map<string, string>();
   function walk(nodes: ManifestPageNode[]): void {
     for (const node of nodes) { map.set(node.id, node.vaultPath); walk(node.children); }
@@ -327,14 +327,14 @@ function buildPathMapFromManifest(manifest: Manifest): Map<string, string> {
   return map;
 }
 
-async function readManifestFile(vault: Vault, manifestPath: string): Promise<Manifest | null> {
+export async function readManifestFile(vault: Vault, manifestPath: string): Promise<Manifest | null> {
   try {
     if (!(await vault.adapter.exists(manifestPath))) return null;
     return JSON.parse(await vault.adapter.read(manifestPath)) as Manifest;
   } catch { return null; }
 }
 
-async function writeManifestFile(vault: Vault, manifestPath: string, manifest: Manifest): Promise<void> {
+export async function writeManifestFile(vault: Vault, manifestPath: string, manifest: Manifest): Promise<void> {
   const json = JSON.stringify(manifest, null, 2) + '\n';
   if (await vault.adapter.exists(manifestPath)) makeWritable(vault, manifestPath);
   await vault.adapter.write(manifestPath, json);

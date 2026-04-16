@@ -1,7 +1,10 @@
 import { ItemView, Modal, Notice, WorkspaceLeaf } from 'obsidian';
 import type ConfluenceVaultSyncPlugin from '../main';
 import { ConfluenceClient } from './confluence-client';
+import { AdfConverter } from './adf-converter';
 import { markdownToAdf } from './markdown-to-adf';
+import { mergeMarkdown } from './merge';
+import { readManifestFile, buildPathMapFromManifest } from './sync-engine';
 import {
   extractFrontmatterField,
   isWritable,
@@ -9,6 +12,8 @@ import {
   makeWritable,
   stripFrontmatter,
 } from './fs-utils';
+
+const LOG = '[Confluence Vault Sync]';
 
 export const WRITEBACK_VIEW_TYPE = 'confluence-writeback';
 
@@ -37,6 +42,44 @@ export class WritebackView extends ItemView {
   constructor(leaf: WorkspaceLeaf, plugin: ConfluenceVaultSyncPlugin) {
     super(leaf);
     this.plugin = plugin;
+  }
+
+  // ---------------------------------------------------------------------------
+  // Base snapshot helpers
+  // Base files are stored in the plugin config dir so they are never shown in
+  // the vault file explorer and are not tracked by version control.
+  // ---------------------------------------------------------------------------
+
+  private get basesDir(): string {
+    return `${this.app.vault.configDir}/plugins/${this.plugin.manifest.id}/bases`;
+  }
+
+  private async saveBase(pageId: string, body: string): Promise<void> {
+    try {
+      if (!(await this.app.vault.adapter.exists(this.basesDir))) {
+        await this.app.vault.adapter.mkdir(this.basesDir);
+      }
+      await this.app.vault.adapter.write(`${this.basesDir}/${pageId}.md`, body);
+    } catch (err) {
+      console.warn(`${LOG} failed to save base snapshot for ${pageId}:`, err);
+    }
+  }
+
+  private async loadBase(pageId: string): Promise<string | null> {
+    const path = `${this.basesDir}/${pageId}.md`;
+    try {
+      if (!(await this.app.vault.adapter.exists(path))) return null;
+      return await this.app.vault.adapter.read(path);
+    } catch { return null; }
+  }
+
+  private async deleteBase(pageId: string): Promise<void> {
+    const path = `${this.basesDir}/${pageId}.md`;
+    try {
+      if (await this.app.vault.adapter.exists(path)) {
+        await this.app.vault.adapter.remove(path);
+      }
+    } catch { /* best effort */ }
   }
 
   getViewType(): string { return WRITEBACK_VIEW_TYPE; }
@@ -211,12 +254,15 @@ export class WritebackView extends ItemView {
   // ---------------------------------------------------------------------------
 
   private async unlock(entry: PageEntry): Promise<void> {
+    const content = await this.app.vault.adapter.read(entry.path);
+    await this.saveBase(entry.pageId, stripFrontmatter(content));
     makeWritable(this.app.vault, entry.path);
     await this.refresh();
   }
 
   private async relock(entry: PageEntry): Promise<void> {
     makeReadOnly(this.app.vault, entry.path);
+    await this.deleteBase(entry.pageId);
     await this.refresh();
   }
 
@@ -234,7 +280,6 @@ export class WritebackView extends ItemView {
       const content = await this.app.vault.adapter.read(entry.path);
       const body = stripFrontmatter(content);
 
-      // Double-check for images
       if (IMAGE_RE.test(body)) {
         new Notice(`"${entry.title}" contains images and cannot be pushed.`);
         return;
@@ -242,27 +287,64 @@ export class WritebackView extends ItemView {
 
       const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
 
-      // Check for conflict
-      const { version, updatedAt } = await client.getPageCurrentVersion(entry.pageId);
-      const remoteUpdated = new Date(updatedAt).getTime();
-      const lastSynced = new Date(entry.lastSynced).getTime();
+      // Fetch version info and the base snapshot in parallel
+      const [{ version, updatedAt }, base] = await Promise.all([
+        client.getPageCurrentVersion(entry.pageId),
+        this.loadBase(entry.pageId),
+      ]);
 
-      if (remoteUpdated > lastSynced) {
-        const proceed = await this.showConflictModal(entry.title, updatedAt, entry.lastSynced);
-        if (!proceed) return;
+      let bodyToPush: string;
+
+      if (base !== null) {
+        // Three-way merge: base (snapshot at unlock time) ← local edits + remote edits
+        const remoteAdf = await client.getPageBody(entry.pageId);
+
+        const target = this.plugin.settings.syncTargets.find((t) => t.spaceKey === entry.spaceKey);
+        const manifest = target
+          ? await readManifestFile(this.app.vault, `${target.syncFolderPath}/manifest.json`)
+          : null;
+        const pathMap = manifest ? buildPathMapFromManifest(manifest) : new Map<string, string>();
+
+        const converter = new AdfConverter(pathMap, confluenceBaseUrl);
+        const remoteMarkdown = converter.convert(remoteAdf);
+
+        const { merged, hasConflicts } = mergeMarkdown(base, body, remoteMarkdown);
+
+        if (hasConflicts) {
+          // Write conflict markers into the local file and leave it unlocked for resolution
+          const frontmatterEnd = content.match(/^---\n[\s\S]*?\n---\n/)?.[0] ?? '';
+          await this.app.vault.adapter.write(entry.path, frontmatterEnd + merged);
+          new Notice(`"${entry.title}" has conflicts — resolve the markers and push again.`, 8000);
+          return;
+        }
+
+        bodyToPush = merged;
+      } else {
+        // No base snapshot (e.g. unlocked before this feature) — fall back to conflict modal
+        const remoteUpdated = new Date(updatedAt).getTime();
+        const lastSynced = new Date(entry.lastSynced).getTime();
+
+        if (remoteUpdated > lastSynced) {
+          const proceed = await this.showConflictModal(entry.title, updatedAt, entry.lastSynced);
+          if (!proceed) return;
+        }
+
+        bodyToPush = body;
       }
 
-      // Build reverse page index: sanitized-filename → Confluence page URL
+      // Convert to ADF and push
       const reverseIndex = await this.buildReversePageIndex(entry.spaceKey);
-
-      const adf = markdownToAdf(body, reverseIndex, confluenceBaseUrl);
+      const adf = markdownToAdf(bodyToPush, reverseIndex, confluenceBaseUrl);
       await client.updatePage(entry.pageId, entry.title, adf, version);
 
-      // Update last-synced in frontmatter and re-lock
-      const updatedContent = updateFrontmatterField(content, 'last-synced', new Date().toISOString());
+      // Write final content (may be merged), update last-synced, relock, delete base
+      const frontmatterEnd = content.match(/^---\n[\s\S]*?\n---\n/)?.[0] ?? '';
+      const newLastSynced = new Date().toISOString();
+      const finalContent = updateFrontmatterField(frontmatterEnd, 'last-synced', newLastSynced) + bodyToPush;
       makeWritable(this.app.vault, entry.path);
-      await this.app.vault.adapter.write(entry.path, updatedContent);
+      await this.app.vault.adapter.write(entry.path, finalContent);
       makeReadOnly(this.app.vault, entry.path);
+      await this.deleteBase(entry.pageId);
 
       new Notice(`"${entry.title}" pushed to Confluence.`);
     } catch (err) {
