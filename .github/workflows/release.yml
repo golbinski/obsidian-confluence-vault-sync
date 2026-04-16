@@ -28,7 +28,7 @@ jobs:
       - run: npm run build
 
       - name: Package plugin zip
-        run: zip confluence-vault-sync.zip main.js manifest.json
+        run: zip confluence-vault-sync.zip main.js manifest.json styles.css
 
       - name: Create GitHub release
         uses: softprops/action-gh-release@v2
@@ -36,4 +36,5 @@ jobs:
           files: |
             main.js
             manifest.json
+            styles.css
             confluence-vault-sync.zip
