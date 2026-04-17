@@ -84,7 +84,20 @@ Synced files include YAML frontmatter with `confluence-id`, `confluence-url`, `c
    - If there are conflicting edits, standard diff3 conflict markers (`<<<<<<< local` / `=======` / `>>>>>>> confluence`) are written into the local file. Resolve the markers manually and click **Push** again.
 5. Click **Relock** to restore read-only protection without pushing.
 
-> **Note:** Pages that contain embedded images cannot be pushed back to Confluence (image upload is not supported).
+> **Note:** Pages that contain *unsupported* embedded content (Lucid, Miro, draw.io, and other custom macros without a linkable URL) are blocked from push. Inline images round-trip normally — new local images are uploaded as Confluence attachments on push.
+
+## Known limitations
+
+The ADF ↔ Markdown conversion is intentionally lossy for constructs Markdown cannot represent. These degrade on round-trip:
+
+- **Text styling** — underline, text color, subscript, and superscript marks are dropped; only the text remains. If you push a page after it was pulled, those marks are not restored.
+- **Extension macros without a URL** — Lucid, Miro, draw.io, and other custom macros that do not expose a URL in their parameters render as a `[key]` placeholder. Pushing a page that contains such macros is blocked by the unsupported-content gate.
+- **Extension macros with a URL** — rendered as a clickable `[key](url)` link. The macro itself is not reconstructed on push; the page becomes push-blocked so the remote embed is preserved.
+- **`expand` panels** — rendered as a blockquote with the title on the first line; the collapsible structure is lost.
+- **Confluence link anchors** — links to `#section` fragments on another page are rewritten to a plain wikilink; the anchor is dropped.
+- **Mentions and emoji** — rendered as `@Name` and `:shortName:` text respectively, without rebuilding the original ADF node on push.
+
+For any page containing unsupported content, the Confluence Changes pane shows a 🖼️ marker and disables the push action. Use Confluence directly to edit those pages.
 
 ## How it works
 
