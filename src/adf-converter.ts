@@ -75,6 +75,13 @@ export class AdfConverter {
       case 'media':
         return this.visitChildren(node, listDepth);
 
+      case 'extension':
+      case 'inlineExtension': {
+        const key = (node.attrs?.extensionKey as string) ?? '';
+        if (key === 'toc') return '[TOC]\n\n';
+        return ''; // unsupported extension — silently omit
+      }
+
       case 'expand': {
         const title = (node.attrs?.title as string) ?? '';
         const inner = this.visitChildren(node, listDepth).trim();

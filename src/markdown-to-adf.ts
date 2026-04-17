@@ -119,6 +119,21 @@ function parseBlocks(
       continue;
     }
 
+    // Table of contents placeholder
+    if (line.trim() === '[TOC]') {
+      nodes.push({
+        type: 'extension',
+        attrs: {
+          extensionType: 'com.atlassian.confluence.macro.core',
+          extensionKey: 'toc',
+          layout: 'default',
+          parameters: { macroParams: {} },
+        },
+      });
+      i++;
+      continue;
+    }
+
     // Standalone image: ![[filename]] or ![alt](path)
     // ADF media nodes must be block-level (mediaSingle), never inline.
     const imageFilename = extractStandaloneImageFilename(line);
@@ -158,6 +173,7 @@ function isBlockStart(line: string): boolean {
     line.match(/^(\s*)[-*]\s/) ||
     line.match(/^(\s*)\d+\.\s/) ||
     line.match(/^\|/) ||
+    line.trim() === '[TOC]' ||
     extractStandaloneImageFilename(line) !== null
   );
 }

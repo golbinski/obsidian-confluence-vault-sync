@@ -142,6 +142,27 @@ describe('markdownToAdf', () => {
     });
   });
 
+  describe('table of contents', () => {
+    it('converts [TOC] to an ADF toc extension node', () => {
+      const [node] = convert('[TOC]');
+      expect(node.type).toBe('extension');
+      expect(node.attrs?.extensionKey).toBe('toc');
+      expect(node.attrs?.extensionType).toBe('com.atlassian.confluence.macro.core');
+    });
+
+    it('[TOC] followed by text produces two separate nodes', () => {
+      const nodes = convert('[TOC]\n\nSome heading');
+      expect(nodes[0].type).toBe('extension');
+      expect(nodes[1].type).toBe('paragraph');
+    });
+
+    it('[TOC] inside a paragraph is not treated as a block element', () => {
+      // inline [TOC] — treated as plain text in a paragraph
+      const [node] = convert('See [TOC] above');
+      expect(node.type).toBe('paragraph');
+    });
+  });
+
   describe('wikilinks', () => {
     it('converts [[wikilink]] to inlineCard when page is in index', () => {
       const index = new Map([['My Page', 'https://org.atlassian.net/wiki/spaces/ENG/pages/42']]);

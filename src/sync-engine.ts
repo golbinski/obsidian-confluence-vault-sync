@@ -634,11 +634,19 @@ export async function runPagePull(
   }
 }
 
-/** ADF node types we cannot represent in Markdown and cannot round-trip back to Confluence. */
-const UNSUPPORTED_NODE_TYPES = new Set([
+/** ADF extension node types (extension/bodiedExtension/inlineExtension). */
+const EXTENSION_NODE_TYPES = new Set([
   'extension',
   'bodiedExtension',
   'inlineExtension',
+]);
+
+/**
+ * Extension keys we know how to round-trip through Markdown.
+ * Extensions with these keys do NOT set hasUnsupportedContent.
+ */
+const SUPPORTED_EXTENSION_KEYS = new Set([
+  'toc', // Table of contents — rendered as [TOC] and regenerated on push
 ]);
 
 export interface ResolvedMedia {
@@ -659,8 +667,11 @@ export async function resolveMediaNodes(
   let hasUnsupportedContent = false;
 
   async function collectMedia(node: import('./confluence-client').AdfNode): Promise<void> {
-    if (UNSUPPORTED_NODE_TYPES.has(node.type)) {
-      hasUnsupportedContent = true;
+    if (EXTENSION_NODE_TYPES.has(node.type)) {
+      const key = (node.attrs?.extensionKey as string) ?? '';
+      if (!SUPPORTED_EXTENSION_KEYS.has(key)) {
+        hasUnsupportedContent = true;
+      }
     }
 
     if (node.type === 'media') {

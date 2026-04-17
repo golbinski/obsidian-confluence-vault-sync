@@ -199,4 +199,25 @@ describe('AdfConverter', () => {
       expect(converter.convert(node)).toContain('a\nb');
     });
   });
+
+  describe('extensions', () => {
+    it('renders a toc extension as [TOC]', () => {
+      const node = doc({
+        type: 'extension',
+        attrs: {
+          extensionType: 'com.atlassian.confluence.macro.core',
+          extensionKey: 'toc',
+        },
+      });
+      expect(converter.convert(node)).toBe('[TOC]\n\n');
+    });
+
+    it('omits unknown extension nodes silently', () => {
+      const node = doc(
+        { type: 'extension', attrs: { extensionType: 'com.example', extensionKey: 'widget' } },
+        p(text('after'))
+      );
+      expect(converter.convert(node)).toBe('after\n\n');
+    });
+  });
 });

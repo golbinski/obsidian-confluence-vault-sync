@@ -176,6 +176,31 @@ describe('resolveMediaNodes', () => {
       expect(hasUnsupportedContent).toBe(true);
     });
 
+    it('does NOT flag toc extension as unsupported', async () => {
+      const adf = makeDoc({
+        type: 'extension',
+        attrs: {
+          extensionType: 'com.atlassian.confluence.macro.core',
+          extensionKey: 'toc',
+        },
+      });
+      const { hasUnsupportedContent } = await resolveMediaNodes(
+        adf, '1', '/vault', mockDownloader({}), realConverter
+      );
+      expect(hasUnsupportedContent).toBe(false);
+    });
+
+    it('flags an unknown extension key as unsupported', async () => {
+      const adf = makeDoc({
+        type: 'extension',
+        attrs: { extensionType: 'com.example', extensionKey: 'custom-widget' },
+      });
+      const { hasUnsupportedContent } = await resolveMediaNodes(
+        adf, '1', '/vault', mockDownloader({}), realConverter
+      );
+      expect(hasUnsupportedContent).toBe(true);
+    });
+
     it('detects unsupported nodes nested inside other content', async () => {
       const adf = makeDoc({
         type: 'table',
