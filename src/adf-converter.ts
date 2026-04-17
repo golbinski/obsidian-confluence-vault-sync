@@ -201,9 +201,12 @@ export class AdfConverter {
   }
 
   private rewriteConfluenceLink(url: string): string {
-    // Match {baseUrl}/wiki/spaces/*/pages/{id}* or /wiki/spaces/*/pages/{id}*
+    // Only rewrite links that are either root-relative (`/wiki/...`) or
+    // absolute against the configured Confluence base URL. Anchored at the
+    // start so that unrelated external URLs containing `/wiki/spaces/.../pages/`
+    // in their path aren't silently converted into wikilinks.
     const pattern = new RegExp(
-      `(?:${escapeRegex(this.baseUrl)})?/wiki/spaces/[^/]+/pages/(\\d+)`
+      `^(?:${escapeRegex(this.baseUrl)})?/wiki/spaces/[^/]+/pages/(\\d+)`
     );
     const match = url.match(pattern);
     if (match) {

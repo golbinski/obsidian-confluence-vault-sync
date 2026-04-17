@@ -107,6 +107,33 @@ describe('AdfConverter', () => {
       const node = doc(p(text('Setup', { type: 'link', attrs: { href: 'https://org.atlassian.net/wiki/spaces/ENG/pages/7' } })));
       expect(c.convert(node)).toContain('[[Setup]]');
     });
+
+    it('rewrites a root-relative Confluence URL', () => {
+      const index = new Map([['42', 'confluence/eng/My Page.md']]);
+      const c = new AdfConverter(index, 'https://org.atlassian.net');
+      const node = doc(p({ type: 'inlineCard', attrs: { url: '/wiki/spaces/ENG/pages/42' } }));
+      expect(c.convert(node)).toContain('[[My Page]]');
+    });
+
+    it('does NOT rewrite an external URL whose path happens to contain /wiki/spaces/...', () => {
+      // A malicious or accidental link to an unrelated site with a matching path
+      // segment must be preserved verbatim rather than silently converted to a wikilink.
+      const index = new Map([['42', 'confluence/eng/My Page.md']]);
+      const c = new AdfConverter(index, 'https://org.atlassian.net');
+      const external = 'https://evil.example.com/wiki/spaces/ENG/pages/42';
+      const node = doc(p(text('click', { type: 'link', attrs: { href: external } })));
+      expect(c.convert(node)).toContain(`[click](${external})`);
+      expect(c.convert(node)).not.toContain('[[My Page]]');
+    });
+
+    it('does NOT rewrite a URL for a different Confluence instance', () => {
+      const index = new Map([['42', 'confluence/eng/My Page.md']]);
+      const c = new AdfConverter(index, 'https://org.atlassian.net');
+      const otherInstance = 'https://other.atlassian.net/wiki/spaces/ENG/pages/42';
+      const node = doc(p({ type: 'inlineCard', attrs: { url: otherInstance } }));
+      expect(c.convert(node)).toContain(otherInstance);
+      expect(c.convert(node)).not.toContain('[[My Page]]');
+    });
   });
 
   describe('lists', () => {
