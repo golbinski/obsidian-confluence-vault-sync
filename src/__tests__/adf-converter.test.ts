@@ -212,12 +212,56 @@ describe('AdfConverter', () => {
       expect(converter.convert(node)).toBe('[TOC]\n\n');
     });
 
-    it('omits unknown extension nodes silently', () => {
+    it('renders unknown extension as [key] placeholder when no URL is available', () => {
       const node = doc(
         { type: 'extension', attrs: { extensionType: 'com.example', extensionKey: 'widget' } },
         p(text('after'))
       );
-      expect(converter.convert(node)).toBe('after\n\n');
+      expect(converter.convert(node)).toBe('[widget]\n\nafter\n\n');
+    });
+
+    it('renders unknown extension as [key](url) when a URL is found in macroParams', () => {
+      const node = doc({
+        type: 'extension',
+        attrs: {
+          extensionType: 'com.lucidchart',
+          extensionKey: 'lucidchart',
+          parameters: {
+            macroParams: {
+              url: { value: 'https://lucid.app/chart/abc123' },
+            },
+          },
+        },
+      });
+      expect(converter.convert(node)).toBe('[lucidchart](https://lucid.app/chart/abc123)\n\n');
+    });
+
+    it('renders inline extension without trailing newlines', () => {
+      const node = doc(p({
+        type: 'inlineExtension',
+        attrs: {
+          extensionType: 'com.miro',
+          extensionKey: 'miro',
+          parameters: { macroParams: { boardUrl: { value: 'https://miro.com/app/board/xyz' } } },
+        },
+      }));
+      // inlineExtension inside paragraph — no \n\n suffix on the link itself
+      expect(converter.convert(node)).toContain('[miro](https://miro.com/app/board/xyz)');
+    });
+
+    it('extracts URL nested inside macroParams value object', () => {
+      const node = doc({
+        type: 'extension',
+        attrs: {
+          extensionKey: 'drawio',
+          parameters: {
+            macroParams: {
+              diagramUrl: { value: 'https://draw.io/diagram/abc' },
+            },
+          },
+        },
+      });
+      expect(converter.convert(node)).toContain('https://draw.io/diagram/abc');
     });
   });
 });

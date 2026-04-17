@@ -76,10 +76,17 @@ export class AdfConverter {
         return this.visitChildren(node, listDepth);
 
       case 'extension':
+      case 'bodiedExtension':
       case 'inlineExtension': {
-        const key = (node.attrs?.extensionKey as string) ?? '';
+        const key = (node.attrs?.extensionKey as string) ?? 'extension';
         if (key === 'toc') return '[TOC]\n\n';
-        return ''; // unsupported extension — silently omit
+        // Best-effort: preserve whatever URL lives in the macro params so the
+        // embed is at least clickable in Obsidian. Push remains blocked via
+        // hasUnsupportedContent — we don't attempt to reconstruct the node.
+        const url = extractExtensionUrl(node.attrs?.parameters);
+        const isInline = node.type === 'inlineExtension';
+        const link = url ? `[${key}](${url})` : `[${key}]`;
+        return isInline ? link : `${link}\n\n`;
       }
 
       case 'expand': {
@@ -214,4 +221,25 @@ export class AdfConverter {
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * Best-effort URL extraction from an ADF extension node's parameters.
+ * Scans macroParams values recursively for any string starting with "http".
+ * Returns the first URL found, or null if none.
+ */
+function extractExtensionUrl(parameters: unknown): string | null {
+  if (!parameters || typeof parameters !== 'object') return null;
+
+  function scan(obj: unknown): string | null {
+    if (typeof obj === 'string' && obj.startsWith('http')) return obj;
+    if (typeof obj !== 'object' || obj === null) return null;
+    for (const val of Object.values(obj as Record<string, unknown>)) {
+      const found = scan(val);
+      if (found) return found;
+    }
+    return null;
+  }
+
+  return scan(parameters);
 }
