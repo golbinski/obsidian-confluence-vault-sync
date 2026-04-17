@@ -13,6 +13,7 @@ import {
   type ConfluenceVaultSyncSettings,
   type SyncTarget,
 } from './src/settings';
+import { encryptToken, decryptToken, isEncryptionAvailable } from './src/token-crypto';
 import { runSyncForTarget, runPagePull, type PullScope } from './src/sync-engine';
 import { WritebackView, WRITEBACK_VIEW_TYPE } from './src/writeback-view';
 import { isWritable, findUnlockedFiles, extractFrontmatterField } from './src/fs-utils';
@@ -134,11 +135,18 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
   }
 
   async loadSettings(): Promise<void> {
-    this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    const data = await this.loadData();
+    this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    // Decrypt token from disk into the in-memory settings field
+    this.settings.confluenceApiToken = decryptToken(this.settings.confluenceApiToken);
   }
 
   async saveSettings(): Promise<void> {
-    await this.saveData(this.settings);
+    const toStore: ConfluenceVaultSyncSettings = { ...this.settings };
+    if (toStore.encryptApiToken) {
+      toStore.confluenceApiToken = encryptToken(toStore.confluenceApiToken);
+    }
+    await this.saveData(toStore);
   }
 
   private validateSettings(): string[] {
@@ -355,6 +363,24 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
             await this.plugin.saveSettings();
           });
       });
+
+    const encryptAvailable = isEncryptionAvailable();
+    new Setting(containerEl)
+      .setName('Encrypt API token')
+      .setDesc(
+        encryptAvailable
+          ? 'Encrypt the API token at rest using the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service). Prevents other apps and AI agents from reading it out of data.json.'
+          : 'OS-level encryption is not available on this platform. The token will be stored as plain text.'
+      )
+      .addToggle((toggle) =>
+        toggle
+          .setValue(this.plugin.settings.encryptApiToken && encryptAvailable)
+          .setDisabled(!encryptAvailable)
+          .onChange(async (value) => {
+            this.plugin.settings.encryptApiToken = value;
+            await this.plugin.saveSettings();
+          })
+      );
 
     new Setting(containerEl)
       .setName('Max image download size in KB')

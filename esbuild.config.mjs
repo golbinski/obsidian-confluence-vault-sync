@@ -5,7 +5,7 @@ const dev = process.argv[2] === 'dev';
 const context = await esbuild.context({
   entryPoints: ['main.ts'],
   bundle: true,
-  external: ['obsidian', 'electron', 'codemirror', '@codemirror/*', '@lezer/*'],
+  external: ['obsidian', 'electron', '@electron/remote', 'codemirror', '@codemirror/*', '@lezer/*'],
   format: 'cjs',
   target: 'es2018',
   logLevel: 'info',
