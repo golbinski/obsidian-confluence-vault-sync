@@ -29,6 +29,42 @@ export interface AdfMark {
 
 const LOG = '[Confluence Vault Sync]';
 
+// Retry settings for transient failures (429 rate-limit, 5xx server errors).
+// Base backoff grows exponentially: 500ms, 1000ms, 2000ms — with jitter.
+const MAX_RETRIES = 3;
+const BASE_BACKOFF_MS = 500;
+
+function isRetryableStatus(status: number | undefined): boolean {
+  if (status === undefined) return false;
+  return status === 429 || (status >= 500 && status < 600);
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function withRetry<T>(
+  label: string,
+  fn: () => Promise<T>,
+  getStatus: (err: unknown) => number | undefined = (e) => (e as { status?: number }).status
+): Promise<T> {
+  let attempt = 0;
+  for (;;) {
+    try {
+      return await fn();
+    } catch (err) {
+      const status = getStatus(err);
+      if (attempt >= MAX_RETRIES || !isRetryableStatus(status)) throw err;
+      // Exponential backoff with full jitter
+      const max = BASE_BACKOFF_MS * Math.pow(2, attempt);
+      const delay = Math.floor(Math.random() * max);
+      console.debug(`${LOG} retry ${attempt + 1}/${MAX_RETRIES} after ${delay}ms (status ${status}) — ${label}`);
+      await sleep(delay);
+      attempt++;
+    }
+  }
+}
+
 export class ConfluenceClient {
   private readonly baseUrl: string;
   private readonly authHeader: string;
@@ -41,13 +77,15 @@ export class ConfluenceClient {
   private async request<T>(url: string): Promise<T> {
     console.debug(`${LOG} GET ${url}`);
     try {
-      const response = await requestUrl({
-        url,
-        headers: {
-          Authorization: this.authHeader,
-          Accept: 'application/json',
-        },
-      });
+      const response = await withRetry(`GET ${url}`, () =>
+        requestUrl({
+          url,
+          headers: {
+            Authorization: this.authHeader,
+            Accept: 'application/json',
+          },
+        })
+      );
       return response.json as T;
     } catch (err) {
       // requestUrl throws on non-2xx; extract status from the error if present
@@ -166,10 +204,12 @@ export class ConfluenceClient {
   async fetchBinary(url: string): Promise<ArrayBuffer> {
     console.debug(`${LOG} downloading binary: ${url}`);
     try {
-      const response = await requestUrl({
-        url,
-        headers: { Authorization: this.authHeader },
-      });
+      const response = await withRetry(`binary ${url}`, () =>
+        requestUrl({
+          url,
+          headers: { Authorization: this.authHeader },
+        })
+      );
       return response.arrayBuffer;
     } catch (err) {
       const status = (err as { status?: number }).status;
@@ -215,27 +255,29 @@ export class ConfluenceClient {
   ): Promise<void> {
     console.debug(`${LOG} updating page ${pageId} "${title}" (base version ${currentVersion})`);
     try {
-      await requestUrl({
-        url: `${this.baseUrl}/wiki/api/v2/pages/${pageId}`,
-        method: 'PUT',
-        headers: {
-          Authorization: this.authHeader,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          id: pageId,
-          status: 'current',
-          title,
-          body: {
-            representation: 'atlas_doc_format',
-            value: JSON.stringify(adf),
+      await withRetry(`PUT page ${pageId}`, () =>
+        requestUrl({
+          url: `${this.baseUrl}/wiki/api/v2/pages/${pageId}`,
+          method: 'PUT',
+          headers: {
+            Authorization: this.authHeader,
+            'Content-Type': 'application/json',
           },
-          version: {
-            number: currentVersion + 1,
-            message: 'Updated via Obsidian Confluence Vault Sync',
-          },
-        }),
-      });
+          body: JSON.stringify({
+            id: pageId,
+            status: 'current',
+            title,
+            body: {
+              representation: 'atlas_doc_format',
+              value: JSON.stringify(adf),
+            },
+            version: {
+              number: currentVersion + 1,
+              message: 'Updated via Obsidian Confluence Vault Sync',
+            },
+          }),
+        })
+      );
     } catch (err) {
       const status = (err as { status?: number }).status;
       throw new Error(`Failed to update page ${pageId}${status ? ` (${status})` : ''}`);
@@ -264,20 +306,27 @@ export class ConfluenceClient {
     formData.append('file', new Blob([data], { type: mimeType }), filename);
     formData.append('minorEdit', 'true');
 
-    const response = await fetch(url, {
-      method: 'POST',
-      headers: {
-        Authorization: this.authHeader,
-        'X-Atlassian-Token': 'no-check',
-      },
-      body: formData,
-    });
-
-    if (!response.ok) {
-      throw new Error(`Attachment upload failed: ${response.status} ${response.statusText}`);
-    }
-
-    const json = await response.json() as { results?: AttachmentUploadResult[] };
+    const json = await withRetry(
+      `POST attachment ${filename}`,
+      async () => {
+        const response = await fetch(url, {
+          method: 'POST',
+          headers: {
+            Authorization: this.authHeader,
+            'X-Atlassian-Token': 'no-check',
+          },
+          body: formData,
+        });
+        if (!response.ok) {
+          const err = new Error(
+            `Attachment upload failed: ${response.status} ${response.statusText}`
+          ) as Error & { status: number };
+          err.status = response.status;
+          throw err;
+        }
+        return (await response.json()) as { results?: AttachmentUploadResult[] };
+      }
+    );
     const att = json.results?.[0];
     if (!att) throw new Error('Confluence returned no attachment in upload response');
 
