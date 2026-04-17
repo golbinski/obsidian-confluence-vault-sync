@@ -416,10 +416,14 @@ export class WritebackView extends ItemView {
     }
 
     // Find all local image references in the body
-    const wikiImages = [...body.matchAll(/!\[\[([^\]]+)\]\]/g)].map((m) => m[1].split('/').pop() ?? m[1]);
+    const wikiImages = [...body.matchAll(/!\[\[([^\]]+)\]\]/g)]
+      .map((m) => sanitizeAttachmentFilename(m[1]))
+      .filter((f): f is string => f !== null);
     const stdImages = [...body.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)]
-      .map((m) => m[1].split('/').pop() ?? m[1])
-      .filter((f) => !f.startsWith('http'));
+      .map((m) => m[1])
+      .filter((f) => !f.startsWith('http'))
+      .map((f) => sanitizeAttachmentFilename(f))
+      .filter((f): f is string => f !== null);
     const allImages = [...new Set([...wikiImages, ...stdImages])];
 
     const target = this.plugin.settings.syncTargets.find((t) => t.spaceKey === spaceKey);
@@ -554,6 +558,24 @@ function stateDecoration(state: FileState): { icon: string; dim: boolean } {
 
 function fmtDate(iso: string): string {
   return new Date(iso).toLocaleString();
+}
+
+/**
+ * Reduce a user-supplied image reference to a safe basename for use in the
+ * `attachments/` folder. Strips any directory components (forward or
+ * backslashes), rejects names that would escape the folder (`.`, `..`, names
+ * beginning with `.`) and rejects control characters or empty strings.
+ * Returns null if the reference is unsafe — callers should skip it.
+ */
+export function sanitizeAttachmentFilename(raw: string): string | null {
+  const basename = raw.split(/[\\/]/).pop() ?? '';
+  const trimmed = basename.trim();
+  if (!trimmed || trimmed === '.' || trimmed === '..') return null;
+  if (trimmed.startsWith('.')) return null;
+  // Reject NUL and other control chars, plus characters Confluence/OS would reject
+  // eslint-disable-next-line no-control-regex
+  if (/[\x00-\x1f]/.test(trimmed)) return null;
+  return trimmed;
 }
 
 function guessMimeType(filename: string): string {
