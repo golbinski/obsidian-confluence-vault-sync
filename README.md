@@ -10,6 +10,7 @@ An [Obsidian](https://obsidian.md) plugin that syncs one or more Confluence Clou
 - **Incremental syncs** — skips pages that have not changed since the last sync, using Confluence version timestamps.
 - **Image attachments** — downloads inline images below a configurable size limit into an `attachments/` folder.
 - **Read-only enforcement** — synced files are locked; Obsidian edits are reverted automatically until you explicitly unlock a file.
+- **Token encryption** — optionally encrypts the Confluence API token at rest using the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service), so it cannot be read from `data.json` by other apps or AI vault agents.
 - **Write-back (Confluence Changes pane)** — unlock a page, edit it locally, and push the Markdown back to Confluence as ADF. Uses three-way merge to preserve concurrent remote edits; conflicts are written as standard diff3 markers into the local file for manual resolution.
 - **Manifest** — writes a `manifest.json` inside each sync folder describing the vault state: page tree, labels, vault paths, and Confluence URLs. Updated incrementally on granular pulls.
 - **Multiple sync targets** — map any number of Confluence spaces to separate vault folders.
@@ -47,6 +48,7 @@ Open **Settings → Confluence Vault Sync** and fill in:
 | Confluence Base URL | Your Atlassian site URL, e.g. `https://yourorg.atlassian.net` |
 | Confluence Email | The email address of your Atlassian account |
 | Confluence API Token | An API token generated at id.atlassian.com |
+| Encrypt API token | Encrypts the token at rest using the OS keychain. Recommended if you use AI agents that can read your vault. Toggling re-encrypts or decrypts automatically. |
 | Max image download size (KB) | Images at or below this size are saved locally (default: 500 KB) |
 | Sync concurrency | Pages fetched in parallel, 1–20 (default: 5) |
 
