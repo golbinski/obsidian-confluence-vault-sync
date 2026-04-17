@@ -1,20 +1,27 @@
 import type { AdfDocument, AdfNode, AdfMark } from './confluence-client';
 
+/** Maps a local attachment filename to its Confluence media attrs. */
+export type AttachmentIndex = Map<string, { mediaId: string; collection: string }>;
+
 /**
  * Convert Markdown back to an ADF document.
  *
- * @param markdown  Stripped markdown content (no frontmatter).
- * @param pageIndex Maps sanitized filename (no extension) → full Confluence page URL.
- *                  Used to rewrite [[wikilinks]] back to inlineCard nodes.
- * @param baseUrl   Confluence base URL (unused for link generation but kept for symmetry).
+ * @param markdown         Stripped markdown content (no frontmatter).
+ * @param pageIndex        Maps sanitized filename (no extension) → full Confluence page URL.
+ *                         Used to rewrite [[wikilinks]] back to inlineCard nodes.
+ * @param baseUrl          Confluence base URL (unused for link generation but kept for symmetry).
+ * @param attachmentIndex  Maps local attachment filename → { mediaId, collection }.
+ *                         Standalone image lines are converted to ADF mediaSingle nodes.
+ *                         Images not present in this index are silently omitted.
  */
 export function markdownToAdf(
   markdown: string,
   pageIndex: Map<string, string>,
-  _baseUrl: string
+  _baseUrl: string,
+  attachmentIndex: AttachmentIndex = new Map()
 ): AdfDocument {
   const lines = markdown.split('\n');
-  const nodes = parseBlocks(lines, 0, lines.length, pageIndex);
+  const nodes = parseBlocks(lines, 0, lines.length, pageIndex, attachmentIndex);
   return { version: 1, type: 'doc', content: nodes };
 }
 
@@ -26,7 +33,8 @@ function parseBlocks(
   lines: string[],
   start: number,
   end: number,
-  pageIndex: Map<string, string>
+  pageIndex: Map<string, string>,
+  attachmentIndex: AttachmentIndex
 ): AdfNode[] {
   const nodes: AdfNode[] = [];
   let i = start;
@@ -98,16 +106,29 @@ function parseBlocks(
       }
       nodes.push({
         type: 'blockquote',
-        content: parseBlocks(quoteLines, 0, quoteLines.length, pageIndex),
+        content: parseBlocks(quoteLines, 0, quoteLines.length, pageIndex, attachmentIndex),
       });
       continue;
     }
 
     // Lists
     if (line.match(/^(\s*)[-*]\s/) || line.match(/^(\s*)\d+\.\s/)) {
-      const { node, consumed } = parseList(lines, i, end, pageIndex, 0);
+      const { node, consumed } = parseList(lines, i, end, pageIndex, 0, attachmentIndex);
       nodes.push(node);
       i += consumed;
+      continue;
+    }
+
+    // Standalone image: ![[filename]] or ![alt](path)
+    // ADF media nodes must be block-level (mediaSingle), never inline.
+    const imageFilename = extractStandaloneImageFilename(line);
+    if (imageFilename !== null) {
+      const att = attachmentIndex.get(imageFilename);
+      if (att) {
+        nodes.push(makeMediaSingle(att.mediaId, att.collection));
+      }
+      // Images not in attachment index are silently omitted (upload failed or external)
+      i++;
       continue;
     }
 
@@ -136,8 +157,32 @@ function isBlockStart(line: string): boolean {
     line.match(/^>\s?/) ||
     line.match(/^(\s*)[-*]\s/) ||
     line.match(/^(\s*)\d+\.\s/) ||
-    line.match(/^\|/)
+    line.match(/^\|/) ||
+    extractStandaloneImageFilename(line) !== null
   );
+}
+
+/** Extract the filename from a standalone image line, or return null. */
+function extractStandaloneImageFilename(line: string): string | null {
+  const trimmed = line.trim();
+  // ![[filename]] — Obsidian wiki-style embed
+  const wikiMatch = trimmed.match(/^!\[\[([^\]]+)\]\]$/);
+  if (wikiMatch) return wikiMatch[1].split('/').pop() ?? wikiMatch[1];
+  // ![alt](path) — standard markdown image (standalone line)
+  const stdMatch = trimmed.match(/^!\[[^\]]*\]\(([^)]+)\)$/);
+  if (stdMatch) return stdMatch[1].split('/').pop() ?? stdMatch[1];
+  return null;
+}
+
+function makeMediaSingle(mediaId: string, collection: string): AdfNode {
+  return {
+    type: 'mediaSingle',
+    attrs: { layout: 'center' },
+    content: [{
+      type: 'media',
+      attrs: { id: mediaId, type: 'file', collection },
+    }],
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -154,7 +199,8 @@ function parseList(
   start: number,
   end: number,
   pageIndex: Map<string, string>,
-  depth: number
+  depth: number,
+  attachmentIndex: AttachmentIndex = new Map()
 ): ListResult {
   const isOrdered = !!lines[start].match(/^(\s*)\d+\.\s/);
   const listType = isOrdered ? 'orderedList' : 'bulletList';
@@ -195,7 +241,7 @@ function parseList(
     }
 
     if (nestedLines.length > 0) {
-      const { node: nestedList } = parseList(nestedLines, 0, nestedLines.length, pageIndex, depth + 1);
+      const { node: nestedList } = parseList(nestedLines, 0, nestedLines.length, pageIndex, depth + 1, attachmentIndex);
       itemContent.push(nestedList);
     }
 

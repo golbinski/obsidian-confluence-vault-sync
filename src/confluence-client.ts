@@ -242,6 +242,49 @@ export class ConfluenceClient {
     }
   }
 
+  /**
+   * Upload a file as an attachment to a Confluence page.
+   * Returns the media ID (UUID) and collection string needed to reference the
+   * attachment in an ADF media node.
+   *
+   * Media UUID resolution order:
+   *   1. `extensions.fileId` (available in some Confluence Cloud versions)
+   *   2. `fileId=` query parameter in `_links.download` URL
+   *   3. Raw `id` field as fallback (may be `att12345` on older instances)
+   */
+  async uploadAttachment(
+    pageId: string,
+    filename: string,
+    data: ArrayBuffer,
+    mimeType: string
+  ): Promise<{ mediaId: string; collection: string }> {
+    const url = `${this.baseUrl}/wiki/rest/api/content/${pageId}/child/attachment`;
+
+    const formData = new FormData();
+    formData.append('file', new Blob([data], { type: mimeType }), filename);
+    formData.append('minorEdit', 'true');
+
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: {
+        Authorization: this.authHeader,
+        'X-Atlassian-Token': 'no-check',
+      },
+      body: formData,
+    });
+
+    if (!response.ok) {
+      throw new Error(`Attachment upload failed: ${response.status} ${response.statusText}`);
+    }
+
+    const json = await response.json() as { results?: AttachmentUploadResult[] };
+    const att = json.results?.[0];
+    if (!att) throw new Error('Confluence returned no attachment in upload response');
+
+    const mediaId = resolveMediaId(att);
+    return { mediaId, collection: `contentId-${pageId}` };
+  }
+
   getBaseUrl(): string {
     return this.baseUrl;
   }
@@ -249,4 +292,27 @@ export class ConfluenceClient {
   getAuthHeader(): string {
     return this.authHeader;
   }
+}
+
+// ---------------------------------------------------------------------------
+// Attachment upload helpers
+// ---------------------------------------------------------------------------
+
+interface AttachmentUploadResult {
+  id: string;
+  extensions?: { fileId?: string };
+  _links?: { download?: string };
+}
+
+function resolveMediaId(att: AttachmentUploadResult): string {
+  // Prefer explicit fileId field (newer Confluence Cloud)
+  if (att.extensions?.fileId) return att.extensions.fileId;
+
+  // Parse from download URL query param: ?fileId=<UUID>
+  const downloadUrl = att._links?.download ?? '';
+  const match = downloadUrl.match(/[?&]fileId=([0-9a-f-]{36})/i);
+  if (match) return match[1];
+
+  // Fallback to raw id (may work on some instances)
+  return att.id;
 }

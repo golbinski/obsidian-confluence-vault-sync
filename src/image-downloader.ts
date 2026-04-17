@@ -13,6 +13,15 @@ interface AttachmentResponse {
   results: AttachmentMetadata[];
 }
 
+export interface MediaHandleResult {
+  /** Markdown representation to embed in the vault file. */
+  markdown: string;
+  /** Local filename of the downloaded file, or null if not downloaded. */
+  filename: string | null;
+  /** MIME type of the attachment, or null if unavailable. */
+  mimeType: string | null;
+}
+
 export class ImageDownloader {
   private readonly client: ConfluenceClient;
   private readonly vault: Vault;
@@ -28,7 +37,7 @@ export class ImageDownloader {
     pageId: string,
     mediaId: string,
     syncFolderPath: string
-  ): Promise<string> {
+  ): Promise<MediaHandleResult> {
     const baseUrl = this.client.getBaseUrl();
     const authHeader = this.client.getAuthHeader();
 
@@ -51,7 +60,7 @@ export class ImageDownloader {
       data.results[0];
 
     if (!attachment) {
-      return `[attachment](${baseUrl}/wiki/spaces)`;
+      return { markdown: `[attachment](${baseUrl}/wiki/spaces)`, filename: null, mimeType: null };
     }
 
     const mediaType = attachment.metadata.mediaType;
@@ -72,12 +81,13 @@ export class ImageDownloader {
         }
 
         await this.vault.adapter.writeBinary(filePath, binary);
-        return `![[${filename}]]`;
+        return { markdown: `![[${filename}]]`, filename, mimeType: mediaType };
       } else {
-        return `![${filename}](${downloadUrl})`;
+        // Too large to download — link only, no local copy
+        return { markdown: `![${filename}](${downloadUrl})`, filename: null, mimeType: null };
       }
     } else {
-      return `[${filename}](${downloadUrl})`;
+      return { markdown: `[${filename}](${downloadUrl})`, filename: null, mimeType: null };
     }
   }
 }

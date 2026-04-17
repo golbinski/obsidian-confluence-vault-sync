@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { markdownToAdf } from '../markdown-to-adf';
+import type { AttachmentIndex } from '../markdown-to-adf';
 import type { AdfNode } from '../confluence-client';
 
 const noIndex = new Map<string, string>();
@@ -10,6 +11,10 @@ function convert(md: string) {
 
 function firstNode(md: string): AdfNode {
   return convert(md)[0];
+}
+
+function convertWithAttachments(md: string, attachments: AttachmentIndex) {
+  return markdownToAdf(md, noIndex, '', attachments).content;
 }
 
 describe('markdownToAdf', () => {
@@ -157,6 +162,68 @@ describe('markdownToAdf', () => {
       const index = new Map([['Page', 'https://example.com/1']]);
       const nodes = markdownToAdf('[[Page|My Alias]]', index, '').content;
       expect(nodes[0].content?.[0]?.type).toBe('inlineCard');
+    });
+  });
+
+  describe('images', () => {
+    const att: AttachmentIndex = new Map([
+      ['chart.png', { mediaId: 'uuid-abc', collection: 'contentId-123' }],
+    ]);
+
+    it('converts ![[filename]] to a mediaSingle block when attachment is known', () => {
+      const [node] = convertWithAttachments('![[chart.png]]', att);
+      expect(node.type).toBe('mediaSingle');
+      expect(node.attrs?.layout).toBe('center');
+      const media = node.content?.[0];
+      expect(media?.type).toBe('media');
+      expect(media?.attrs?.id).toBe('uuid-abc');
+      expect(media?.attrs?.collection).toBe('contentId-123');
+      expect(media?.attrs?.type).toBe('file');
+    });
+
+    it('converts standard markdown image to mediaSingle when attachment is known', () => {
+      const [node] = convertWithAttachments('![alt text](chart.png)', att);
+      expect(node.type).toBe('mediaSingle');
+      expect(node.content?.[0].attrs?.id).toBe('uuid-abc');
+    });
+
+    it('omits ![[filename]] when attachment is not in index', () => {
+      const nodes = convertWithAttachments('![[unknown.png]]', att);
+      expect(nodes).toHaveLength(0);
+    });
+
+    it('omits standard image when attachment is not in index', () => {
+      const nodes = convertWithAttachments('![alt](unknown.png)', att);
+      expect(nodes).toHaveLength(0);
+    });
+
+    it('handles path prefix in wiki embed — uses only the filename part', () => {
+      const index: AttachmentIndex = new Map([
+        ['chart.png', { mediaId: 'uuid-xyz', collection: 'contentId-999' }],
+      ]);
+      const [node] = convertWithAttachments('![[attachments/chart.png]]', index);
+      expect(node.type).toBe('mediaSingle');
+      expect(node.content?.[0].attrs?.id).toBe('uuid-xyz');
+    });
+
+    it('renders image and following paragraph as separate top-level nodes', () => {
+      const nodes = convertWithAttachments('![[chart.png]]\n\nSome text', att);
+      expect(nodes).toHaveLength(2);
+      expect(nodes[0].type).toBe('mediaSingle');
+      expect(nodes[1].type).toBe('paragraph');
+    });
+
+    it('renders nothing for images when no attachment index is provided', () => {
+      // No attachment index → all images silently omitted
+      const nodes = convert('![[chart.png]]');
+      expect(nodes).toHaveLength(0);
+    });
+
+    it('does not add image to attachment index mid-document (index is read-only)', () => {
+      // Two images: one known, one unknown — only the known one appears
+      const nodes = convertWithAttachments('![[chart.png]]\n\n![[other.png]]', att);
+      expect(nodes).toHaveLength(1);
+      expect(nodes[0].type).toBe('mediaSingle');
     });
   });
 

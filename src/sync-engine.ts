@@ -190,6 +190,13 @@ function buildFrontmatter(
   ].join('\n');
 }
 
+export interface ManifestAttachment {
+  mediaId: string;
+  collection: string;
+  filename: string;
+  mimeType: string;
+}
+
 export interface ManifestPageNode {
   id: string;
   title: string;
@@ -198,6 +205,8 @@ export interface ManifestPageNode {
   modifiedAt: string;
   lastSynced: string;
   labels: string[];
+  attachments: ManifestAttachment[];
+  hasUnsupportedContent: boolean;
   children: ManifestPageNode[];
 }
 
@@ -211,12 +220,19 @@ export interface Manifest {
   tree: ManifestPageNode[];
 }
 
+type ManifestData = Map<string, {
+  labels: string[];
+  lastSynced: string;
+  attachments: ManifestAttachment[];
+  hasUnsupportedContent: boolean;
+}>;
+
 /** Builds ManifestPageNodes from a Confluence page tree + manifestData. Pages without
  *  a manifestData entry are skipped but their children are re-parented upward. */
 function buildManifestNodes(
   nodes: PageNode[],
   pathMap: Map<string, string>,
-  manifestData: Map<string, { labels: string[]; lastSynced: string }>,
+  manifestData: ManifestData,
   spaceKey: string,
   baseUrl: string
 ): ManifestPageNode[] {
@@ -236,6 +252,8 @@ function buildManifestNodes(
       modifiedAt: node.page.versionDate,
       lastSynced: meta.lastSynced,
       labels: meta.labels,
+      attachments: meta.attachments,
+      hasUnsupportedContent: meta.hasUnsupportedContent,
       children,
     });
   }
@@ -251,7 +269,7 @@ function countManifestNodes(nodes: ManifestPageNode[]): number {
 function buildManifest(
   tree: PageNode[],
   pathMap: Map<string, string>,
-  manifestData: Map<string, { labels: string[]; lastSynced: string }>,
+  manifestData: ManifestData,
   spaceKey: string,
   spaceName: string | null,
   homePageId: string | null,
@@ -406,6 +424,10 @@ export async function runSyncForTarget(
   // 5. Ensure sync folder exists
   try { await vault.adapter.mkdir(syncFolderPath); } catch { /* exists */ }
 
+  // Pre-load existing manifest so skipped (unchanged) pages keep their attachment data
+  const existingManifest = await readManifestFile(vault, `${syncFolderPath}/manifest.json`);
+  const existingManifestIndex = existingManifest ? buildManifestIndex(existingManifest) : null;
+
   const converter = new AdfConverter(pathMap, confluenceBaseUrl);
   let syncedCount = 0;
   let skippedCount = 0;
@@ -414,7 +436,7 @@ export async function runSyncForTarget(
 
   // manifestData is populated only for pagesToSync — callers use it to update
   // only the affected portion of the manifest (vault state, not Confluence state).
-  const manifestData = new Map<string, { labels: string[]; lastSynced: string }>();
+  const manifestData: ManifestData = new Map();
 
   new Notice(`${spaceKey}: ${pagesToSync.length} pages found, syncing…`);
   console.debug(`${LOG} syncing ${pagesToSync.length} pages with concurrency ${syncConcurrency}`);
@@ -444,7 +466,14 @@ export async function runSyncForTarget(
       skippedCount++;
       console.debug(`${LOG} [${i + 1}/${pagesToSync.length}] skipping unchanged "${page.title}"`);
       const labels = await labelsPromise;
-      manifestData.set(page.id, { labels, lastSynced: existing.lastSynced });
+      // Preserve existing attachment data for skipped pages (content unchanged)
+      const existingNode = existingManifestIndex?.get(page.id);
+      manifestData.set(page.id, {
+        labels,
+        lastSynced: existing.lastSynced,
+        attachments: existingNode?.attachments ?? [],
+        hasUnsupportedContent: existingNode?.hasUnsupportedContent ?? false,
+      });
       return;
     }
 
@@ -465,7 +494,7 @@ export async function runSyncForTarget(
         try { await vault.adapter.mkdir(dir); } catch { /* exists */ }
       }
 
-      const markdown = await resolveMediaNodes(
+      const { markdown, attachments, hasUnsupportedContent } = await resolveMediaNodes(
         adf, page.id, syncFolderPath, imageDownloader, converter
       );
 
@@ -478,7 +507,7 @@ export async function runSyncForTarget(
       makeReadOnly(vault, vaultPath);
 
       const labels = await labelsPromise;
-      manifestData.set(page.id, { labels, lastSynced });
+      manifestData.set(page.id, { labels, lastSynced, attachments, hasUnsupportedContent });
       syncedCount++;
     } catch (err) {
       failedCount++;
@@ -580,7 +609,9 @@ export async function runPagePull(
   const imageDownloader = new ImageDownloader(client, vault, maxImageDownloadSizeKb);
 
   const adf = await client.getPageBody(pageId);
-  const markdown = await resolveMediaNodes(adf, pageId, syncFolderPath, imageDownloader, converter);
+  const { markdown, attachments, hasUnsupportedContent } = await resolveMediaNodes(
+    adf, pageId, syncFolderPath, imageDownloader, converter
+  );
 
   const newLastSynced = new Date().toISOString();
   const newContent = buildFrontmatter(pageId, confluenceBaseUrl, spaceKey, title, newLastSynced) + markdown;
@@ -596,27 +627,52 @@ export async function runPagePull(
       labels,
       lastSynced: newLastSynced,
       modifiedAt: updatedAt,
+      attachments,
+      hasUnsupportedContent,
     });
     await writeManifestFile(vault, manifestPath, manifest);
   }
 }
 
-async function resolveMediaNodes(
+/** ADF node types we cannot represent in Markdown and cannot round-trip back to Confluence. */
+const UNSUPPORTED_NODE_TYPES = new Set([
+  'extension',
+  'bodiedExtension',
+  'inlineExtension',
+]);
+
+export interface ResolvedMedia {
+  markdown: string;
+  attachments: ManifestAttachment[];
+  hasUnsupportedContent: boolean;
+}
+
+export async function resolveMediaNodes(
   adf: import('./confluence-client').AdfDocument,
   pageId: string,
   syncFolderPath: string,
-  imageDownloader: ImageDownloader,
-  converter: AdfConverter
-): Promise<string> {
+  imageDownloader: Pick<ImageDownloader, 'handleMedia'>,
+  converter: Pick<AdfConverter, 'convert'>
+): Promise<ResolvedMedia> {
   const mediaReplacements = new Map<string, string>();
+  const attachments: ManifestAttachment[] = [];
+  let hasUnsupportedContent = false;
 
   async function collectMedia(node: import('./confluence-client').AdfNode): Promise<void> {
+    if (UNSUPPORTED_NODE_TYPES.has(node.type)) {
+      hasUnsupportedContent = true;
+    }
+
     if (node.type === 'media') {
       const mediaId = (node.attrs?.id as string) ?? '';
+      const collection = (node.attrs?.collection as string) ?? '';
       if (mediaId && !mediaReplacements.has(mediaId)) {
         try {
           const result = await imageDownloader.handleMedia(pageId, mediaId, syncFolderPath);
-          mediaReplacements.set(mediaId, result);
+          mediaReplacements.set(mediaId, result.markdown);
+          if (result.filename && result.mimeType) {
+            attachments.push({ mediaId, collection, filename: result.filename, mimeType: result.mimeType });
+          }
         } catch (err) {
           console.warn(`${LOG} failed to download media ${mediaId}:`, err);
           mediaReplacements.set(mediaId, '[attachment unavailable]');
@@ -647,5 +703,18 @@ async function resolveMediaNodes(
   }
 
   const resolvedAdf = replaceMedia(adf) as import('./confluence-client').AdfDocument;
-  return converter.convert(resolvedAdf);
+  return { markdown: converter.convert(resolvedAdf), attachments, hasUnsupportedContent };
+}
+
+/** Build a flat pageId → ManifestPageNode map for O(1) lookups. */
+export function buildManifestIndex(manifest: Manifest): Map<string, ManifestPageNode> {
+  const index = new Map<string, ManifestPageNode>();
+  function walk(nodes: ManifestPageNode[]): void {
+    for (const node of nodes) {
+      index.set(node.id, node);
+      walk(node.children);
+    }
+  }
+  walk(manifest.tree);
+  return index;
 }

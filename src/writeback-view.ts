@@ -4,7 +4,14 @@ import { ConfluenceClient } from './confluence-client';
 import { AdfConverter } from './adf-converter';
 import { markdownToAdf } from './markdown-to-adf';
 import { mergeMarkdown } from './merge';
-import { readManifestFile, buildPathMapFromManifest } from './sync-engine';
+import {
+  readManifestFile,
+  buildPathMapFromManifest,
+  buildManifestIndex,
+  type ManifestAttachment,
+  type ManifestPageNode,
+} from './sync-engine';
+import type { AttachmentIndex } from './markdown-to-adf';
 import {
   extractFrontmatterField,
   isWritable,
@@ -17,11 +24,9 @@ const LOG = '[Confluence Vault Sync]';
 
 export const WRITEBACK_VIEW_TYPE = 'confluence-writeback';
 
-const IMAGE_RE = /!\[\[|!\[.+?\]\(.+?\)/;
-
 type FileState =
   | { kind: 'locked' }
-  | { kind: 'has-images' }
+  | { kind: 'has-unsupported' }
   | { kind: 'unlocked' }
   | { kind: 'modified' }
   | { kind: 'pushing' };
@@ -33,6 +38,8 @@ interface PageEntry {
   spaceKey: string;
   lastSynced: string;
   state: FileState;
+  attachments: ManifestAttachment[];
+  hasUnsupportedContent: boolean;
 }
 
 export class WritebackView extends ItemView {
@@ -103,13 +110,20 @@ export class WritebackView extends ItemView {
     const entries: PageEntry[] = [];
 
     for (const target of this.plugin.settings.syncTargets) {
-      await this.scanDir(target.syncFolderPath, entries);
+      const manifestPath = `${target.syncFolderPath}/manifest.json`;
+      const manifest = await readManifestFile(this.app.vault, manifestPath);
+      const manifestIndex = manifest ? buildManifestIndex(manifest) : new Map<string, ManifestPageNode>();
+      await this.scanDir(target.syncFolderPath, entries, manifestIndex);
     }
 
     return entries;
   }
 
-  private async scanDir(dir: string, entries: PageEntry[]): Promise<void> {
+  private async scanDir(
+    dir: string,
+    entries: PageEntry[],
+    manifestIndex: Map<string, ManifestPageNode>
+  ): Promise<void> {
     let listed;
     try {
       listed = await this.app.vault.adapter.list(dir);
@@ -128,29 +142,41 @@ export class WritebackView extends ItemView {
 
         if (!pageId || !title || !spaceKey || !lastSynced) continue;
 
-        const body = stripFrontmatter(content);
-        const state = await this.computeState(filePath, body, lastSynced);
+        const manifestNode = manifestIndex.get(pageId);
+        const attachments = manifestNode?.attachments ?? [];
+        const hasUnsupportedContent = manifestNode?.hasUnsupportedContent ?? false;
 
-        entries.push({ path: filePath, pageId, title, spaceKey, lastSynced, state });
+        const state = await this.computeState(filePath, lastSynced, hasUnsupportedContent);
+
+        entries.push({
+          path: filePath,
+          pageId,
+          title,
+          spaceKey,
+          lastSynced,
+          state,
+          attachments,
+          hasUnsupportedContent,
+        });
       } catch { /* skip */ }
     }
 
     for (const folder of listed.folders) {
-      await this.scanDir(folder, entries);
+      await this.scanDir(folder, entries, manifestIndex);
     }
   }
 
   private async computeState(
     filePath: string,
-    body: string,
-    lastSynced: string
+    lastSynced: string,
+    hasUnsupportedContent: boolean
   ): Promise<FileState> {
     if (this.pushing.has(filePath)) return { kind: 'pushing' };
 
     const writable = isWritable(this.app.vault, filePath);
 
     if (!writable) {
-      if (IMAGE_RE.test(body)) return { kind: 'has-images' };
+      if (hasUnsupportedContent) return { kind: 'has-unsupported' };
       return { kind: 'locked' };
     }
 
@@ -220,9 +246,9 @@ export class WritebackView extends ItemView {
         this.addButton(right, 'Unlock', () => { void this.unlock(entry); });
         break;
 
-      case 'has-images': {
-        const label = right.createSpan({ text: 'has images', cls: 'cvs-dim-label' });
-        label.title = 'Pages with images cannot be edited locally (image upload not supported)';
+      case 'has-unsupported': {
+        const label = right.createSpan({ text: 'has unsupported content', cls: 'cvs-dim-label' });
+        label.title = 'Page contains embedded content (e.g. Lucid, Miro) that cannot be converted to Markdown and cannot be pushed back to Confluence';
         break;
       }
 
@@ -280,8 +306,8 @@ export class WritebackView extends ItemView {
       const content = await this.app.vault.adapter.read(entry.path);
       const body = stripFrontmatter(content);
 
-      if (IMAGE_RE.test(body)) {
-        new Notice(`"${entry.title}" contains images and cannot be pushed.`);
+      if (entry.hasUnsupportedContent) {
+        new Notice(`"${entry.title}" contains embedded content that cannot be pushed (Lucid, Miro, etc.).`);
         return;
       }
 
@@ -334,7 +360,10 @@ export class WritebackView extends ItemView {
 
       // Convert to ADF and push
       const reverseIndex = await this.buildReversePageIndex(entry.spaceKey);
-      const adf = markdownToAdf(bodyToPush, reverseIndex, confluenceBaseUrl);
+      const attachmentIndex = await this.resolveAttachmentIndex(
+        entry.pageId, entry.spaceKey, entry.attachments, bodyToPush, client
+      );
+      const adf = markdownToAdf(bodyToPush, reverseIndex, confluenceBaseUrl, attachmentIndex);
       await client.updatePage(entry.pageId, entry.title, adf, version);
 
       // Write final content (may be merged), update last-synced, relock, delete base
@@ -364,6 +393,56 @@ export class WritebackView extends ItemView {
     return new Promise((resolve) => {
       new ConflictModal(this.app, title, remoteUpdatedAt, lastSynced, resolve).open();
     });
+  }
+
+  /**
+   * Build an AttachmentIndex for a page:
+   * - Seeds from known manifest attachments (already on Confluence).
+   * - For any ![[filename]] in the body not yet in the index, attempts to upload
+   *   the local vault file as a new Confluence attachment.
+   */
+  private async resolveAttachmentIndex(
+    pageId: string,
+    spaceKey: string,
+    knownAttachments: ManifestAttachment[],
+    body: string,
+    client: ConfluenceClient
+  ): Promise<AttachmentIndex> {
+    const index: AttachmentIndex = new Map();
+
+    // Seed with attachments already tracked in the manifest
+    for (const att of knownAttachments) {
+      index.set(att.filename, { mediaId: att.mediaId, collection: att.collection });
+    }
+
+    // Find all local image references in the body
+    const wikiImages = [...body.matchAll(/!\[\[([^\]]+)\]\]/g)].map((m) => m[1].split('/').pop() ?? m[1]);
+    const stdImages = [...body.matchAll(/!\[[^\]]*\]\(([^)]+)\)/g)]
+      .map((m) => m[1].split('/').pop() ?? m[1])
+      .filter((f) => !f.startsWith('http'));
+    const allImages = [...new Set([...wikiImages, ...stdImages])];
+
+    const target = this.plugin.settings.syncTargets.find((t) => t.spaceKey === spaceKey);
+    if (!target) return index;
+
+    for (const filename of allImages) {
+      if (index.has(filename)) continue; // Already known from manifest
+
+      // New local image — attempt to upload as a Confluence attachment
+      const attachmentsPath = `${target.syncFolderPath}/attachments/${filename}`;
+      try {
+        const data = await this.app.vault.adapter.readBinary(attachmentsPath);
+        const mimeType = guessMimeType(filename);
+        const { mediaId, collection } = await client.uploadAttachment(pageId, filename, data, mimeType);
+        index.set(filename, { mediaId, collection });
+        console.debug(`${LOG} uploaded new attachment "${filename}" → ${mediaId}`);
+      } catch (err) {
+        console.warn(`${LOG} could not upload "${filename}":`, err);
+        new Notice(`Warning: image "${filename}" could not be uploaded and will be omitted from the page.`, 6000);
+      }
+    }
+
+    return index;
   }
 
   /** Build a map of sanitized-filename → Confluence page URL for the given space. */
@@ -465,16 +544,30 @@ class ConflictModal extends Modal {
 
 function stateDecoration(state: FileState): { icon: string; dim: boolean } {
   switch (state.kind) {
-    case 'locked':    return { icon: '🔒', dim: false };
-    case 'has-images':return { icon: '🖼️', dim: true };
-    case 'unlocked':  return { icon: '✏️', dim: false };
-    case 'modified':  return { icon: '✏️●', dim: false };
-    case 'pushing':   return { icon: '⬆️', dim: false };
+    case 'locked':          return { icon: '🔒', dim: false };
+    case 'has-unsupported': return { icon: '🖼️', dim: true };
+    case 'unlocked':        return { icon: '✏️', dim: false };
+    case 'modified':        return { icon: '✏️●', dim: false };
+    case 'pushing':         return { icon: '⬆️', dim: false };
   }
 }
 
 function fmtDate(iso: string): string {
   return new Date(iso).toLocaleString();
+}
+
+function guessMimeType(filename: string): string {
+  const ext = filename.split('.').pop()?.toLowerCase() ?? '';
+  const map: Record<string, string> = {
+    png: 'image/png',
+    jpg: 'image/jpeg',
+    jpeg: 'image/jpeg',
+    gif: 'image/gif',
+    webp: 'image/webp',
+    svg: 'image/svg+xml',
+    pdf: 'application/pdf',
+  };
+  return map[ext] ?? 'application/octet-stream';
 }
 
 /** Replace a frontmatter field value in-place. */
