@@ -4,6 +4,7 @@ export interface ConfluencePage {
   id: string;
   title: string;
   parentId: string | null;
+  parentType: string | null; // "page", "folder", or null for space roots
   spaceKey: string;
   versionDate: string; // ISO timestamp of last modification from Confluence
 }
@@ -139,6 +140,7 @@ export class ConfluenceClient {
         id: string;
         title: string;
         parentId?: string | null;
+        parentType?: string | null;
         version?: { createdAt?: string };
       }>;
       _links?: { next?: string };
@@ -156,6 +158,7 @@ export class ConfluenceClient {
           id: page.id,
           title: page.title,
           parentId: page.parentId ?? null,
+          parentType: page.parentType ?? null,
           spaceKey,
           versionDate: page.version?.createdAt ?? new Date(0).toISOString(),
         });
@@ -169,21 +172,45 @@ export class ConfluenceClient {
     return pages;
   }
 
-  /**
-   * Fetch minimal metadata for any content ID using the v1 REST API.
-   * Used to resolve Confluence Folder entities (and other non-page types) that
-   * are excluded from the v2 /pages endpoint but appear as parentId references.
-   * Returns null if the content is inaccessible or not found.
-   */
-  async getContentById(id: string): Promise<{ id: string; title: string; parentId: string | null } | null> {
+  /** Fetch a Confluence Folder entity by ID via the v2 folders endpoint. */
+  async getFolderById(
+    id: string
+  ): Promise<{ id: string; title: string; parentId: string | null; parentType: string | null } | null> {
     try {
       const data = await this.request<{
         id: string;
         title: string;
+        parentId?: string | null;
+        parentType?: string | null;
+      }>(`${this.baseUrl}/wiki/api/v2/folders/${id}`);
+      return {
+        id: data.id,
+        title: data.title,
+        parentId: data.parentId ?? null,
+        parentType: data.parentType ?? null,
+      };
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Fallback: fetch any content entity by ID via the v1 REST API.
+   * Used when the content type is unknown or not covered by v2 endpoints.
+   * Returns null if the content is inaccessible or not found.
+   */
+  async getContentById(
+    id: string
+  ): Promise<{ id: string; title: string; parentId: string | null; parentType: string | null } | null> {
+    try {
+      const data = await this.request<{
+        id: string;
+        title: string;
+        type?: string;
         ancestors?: Array<{ id: string }>;
       }>(`${this.baseUrl}/wiki/rest/api/content/${id}?expand=ancestors`);
       const parentId = data.ancestors?.at(-1)?.id ?? null;
-      return { id: data.id, title: data.title, parentId };
+      return { id: data.id, title: data.title, parentId, parentType: null };
     } catch {
       return null;
     }
@@ -219,6 +246,7 @@ export class ConfluenceClient {
           id: page.id,
           title: page.title,
           parentId: page.parentId ?? pageId,
+          parentType: 'page',
           spaceKey: page.spaceKey ?? '',
           versionDate: page.version?.createdAt ?? new Date(0).toISOString(),
         });

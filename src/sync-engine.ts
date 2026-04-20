@@ -395,20 +395,36 @@ export async function runSyncForTarget(
   console.debug(`${LOG} ${pages.length} pages fetched, home page ID: ${homePageId ?? 'unknown'}`);
 
   // 1b. Resolve any parentId references that are missing from the page list.
-  //     Confluence Folder entities (and potentially other non-page types) are
-  //     excluded from the v2 /pages endpoint but regular pages reference their
-  //     IDs as parentId. Without them buildTree can't reconstruct the hierarchy.
-  //     We resolve them iteratively via the v1 content API until stable.
+  //     Confluence Folder entities are excluded from the v2 /pages endpoint but
+  //     regular pages reference their IDs as parentId. We use the parentType
+  //     field (present in the /pages response) to call the right endpoint:
+  //     parentType="folder" → v2 /folders/{id}, anything else → v1 /content/{id}.
+  //     Iterate until all parents are accounted for (folders can nest).
   {
     const knownIds = new Set(pages.map((p) => p.id));
+    // parentType map: parentId → what type the parent is, as reported by its child
+    const parentTypeMap = new Map<string, string>();
+    for (const p of pages) {
+      if (p.parentId && p.parentType) parentTypeMap.set(p.parentId, p.parentType);
+    }
+
     let missing = new Set(
       pages.map((p) => p.parentId).filter((id): id is string => id !== null && !knownIds.has(id))
     );
+
     while (missing.size > 0) {
       console.debug(`${LOG} resolving ${missing.size} missing parent ID(s) (folders/non-page content)…`);
       const resolved = await Promise.all(
-        [...missing].map((id) => client.getContentById(id))
+        [...missing].map(async (id) => {
+          const isFolder = parentTypeMap.get(id) === 'folder';
+          const content = isFolder
+            ? await client.getFolderById(id)
+            : await client.getContentById(id);
+          // If the typed endpoint missed, try the other as fallback
+          return content ?? (isFolder ? client.getContentById(id) : client.getFolderById(id));
+        })
       );
+
       missing = new Set();
       for (const content of resolved) {
         if (!content || knownIds.has(content.id)) continue;
@@ -416,11 +432,13 @@ export async function runSyncForTarget(
           id: content.id,
           title: content.title,
           parentId: content.parentId,
+          parentType: content.parentType,
           spaceKey,
-          versionDate: new Date(0).toISOString(), // will be skipped for body fetch if unchanged
+          versionDate: new Date(0).toISOString(),
         });
         knownIds.add(content.id);
         if (content.parentId && !knownIds.has(content.parentId)) {
+          if (content.parentType) parentTypeMap.set(content.parentId, content.parentType);
           missing.add(content.parentId);
         }
       }
