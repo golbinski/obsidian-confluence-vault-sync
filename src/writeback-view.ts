@@ -94,6 +94,9 @@ export class WritebackView extends ItemView {
   getIcon(): string { return 'git-pull-request'; }
 
   async onOpen(): Promise<void> {
+    this.registerEvent(
+      this.app.workspace.on('active-leaf-change', () => { void this.refresh(); })
+    );
     await this.refresh();
   }
 
@@ -210,7 +213,9 @@ export class WritebackView extends ItemView {
       return;
     }
 
-    // Group by space
+    const activeFilePath = this.app.workspace.getActiveFile()?.path ?? null;
+
+    // Group by space, active file floated to top of its group
     const bySpace = new Map<string, PageEntry[]>();
     for (const entry of entries) {
       const group = bySpace.get(entry.spaceKey) ?? [];
@@ -219,17 +224,27 @@ export class WritebackView extends ItemView {
     }
 
     for (const [spaceKey, pages] of bySpace) {
+      // Sort: active file first, rest unchanged
+      const sorted = activeFilePath
+        ? [...pages].sort((a, b) => {
+            if (a.path === activeFilePath) return -1;
+            if (b.path === activeFilePath) return 1;
+            return 0;
+          })
+        : pages;
+
       const section = container.createDiv({ cls: 'cvs-space-section' });
       section.createEl('div', { cls: 'cvs-space-label', text: spaceKey });
 
-      for (const entry of pages) {
-        this.renderRow(section, entry);
+      for (const entry of sorted) {
+        this.renderRow(section, entry, entry.path === activeFilePath);
       }
     }
   }
 
-  private renderRow(container: HTMLElement, entry: PageEntry): void {
+  private renderRow(container: HTMLElement, entry: PageEntry, isActive = false): void {
     const row = container.createDiv({ cls: 'cvs-page-row' });
+    if (isActive) row.addClass('cvs-page-row--active');
 
     const left = row.createDiv({ cls: 'cvs-row-left' });
 

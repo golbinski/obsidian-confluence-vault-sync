@@ -57,6 +57,12 @@
   margin-bottom: 2px;
 }
 
+.cvs-page-row--active {
+  background-color: var(--background-modifier-active-hover);
+  border-left: 2px solid var(--interactive-accent);
+  padding-left: 6px;
+}
+
 /* Writeback view: left side of page row */
 .cvs-row-left {
   display: flex;
