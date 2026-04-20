@@ -5,7 +5,7 @@ import type { Vault } from 'obsidian';
 interface AttachmentMetadata {
   title: string;
   metadata: { mediaType: string };
-  extensions: { fileSize: number };
+  extensions: { fileSize: number; fileId?: string };
   _links: { download: string };
 }
 
@@ -55,7 +55,19 @@ export class ImageDownloader {
 
     const data = response.json as AttachmentResponse;
 
+    // Find the specific attachment matching mediaId. Confluence stores the file
+    // UUID in extensions.fileId (newer Cloud) or as a fileId= query param in
+    // the download URL (older). Fall back to the first image if no exact match
+    // (e.g. page has only one image and mediaId resolution differs).
+    const findByMediaId = (results: AttachmentMetadata[]): AttachmentMetadata | undefined =>
+      results.find((a) => {
+        if (a.extensions?.fileId === mediaId) return true;
+        const match = a._links?.download?.match(/[?&]fileId=([0-9a-f-]{36})/i);
+        return match?.[1] === mediaId;
+      });
+
     const attachment =
+      findByMediaId(data.results) ??
       data.results.find((a) => a.metadata.mediaType.startsWith('image/')) ??
       data.results[0];
 

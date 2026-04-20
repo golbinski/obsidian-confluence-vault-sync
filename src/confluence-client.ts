@@ -5,6 +5,7 @@ export interface ConfluencePage {
   title: string;
   parentId: string | null;
   parentType: string | null; // "page", "folder", or null for space roots
+  contentType: 'page' | 'folder' | 'unknown'; // entity type in Confluence
   spaceKey: string;
   versionDate: string; // ISO timestamp of last modification from Confluence
 }
@@ -159,6 +160,7 @@ export class ConfluenceClient {
           title: page.title,
           parentId: page.parentId ?? null,
           parentType: page.parentType ?? null,
+          contentType: 'page',
           spaceKey,
           versionDate: page.version?.createdAt ?? new Date(0).toISOString(),
         });
@@ -247,6 +249,7 @@ export class ConfluenceClient {
           title: page.title,
           parentId: page.parentId ?? pageId,
           parentType: 'page',
+          contentType: 'page',
           spaceKey: page.spaceKey ?? '',
           versionDate: page.version?.createdAt ?? new Date(0).toISOString(),
         });

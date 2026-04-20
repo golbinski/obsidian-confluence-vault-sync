@@ -417,22 +417,23 @@ export async function runSyncForTarget(
       const resolved = await Promise.all(
         [...missing].map(async (id) => {
           const isFolder = parentTypeMap.get(id) === 'folder';
+          // Try the most-likely endpoint first, fall back to the other
           const content = isFolder
-            ? await client.getFolderById(id)
-            : await client.getContentById(id);
-          // If the typed endpoint missed, try the other as fallback
-          return content ?? (isFolder ? client.getContentById(id) : client.getFolderById(id));
+            ? (await client.getFolderById(id)) ?? (await client.getContentById(id))
+            : (await client.getContentById(id)) ?? (await client.getFolderById(id));
+          return { id, content, isFolder };
         })
       );
 
       missing = new Set();
-      for (const content of resolved) {
+      for (const { content, isFolder } of resolved) {
         if (!content || knownIds.has(content.id)) continue;
         pages.push({
           id: content.id,
           title: content.title,
           parentId: content.parentId,
           parentType: content.parentType,
+          contentType: isFolder ? 'folder' : 'unknown',
           spaceKey,
           versionDate: new Date(0).toISOString(),
         });
@@ -520,17 +521,25 @@ export async function runSyncForTarget(
     const vaultPath = pathMap.get(page.id);
     if (!vaultPath) return;
 
+    completedCount++;
+    onProgress?.(completedCount, pagesToSync.length, page.title);
+
+    // Folder entities and other non-page types don't have a body or labels —
+    // just record them in manifestData with empty metadata so the tree is complete.
+    if (page.contentType !== 'page') {
+      console.debug(`${LOG} [${i + 1}/${pagesToSync.length}] skipping body for ${page.contentType} "${page.title}"`);
+      manifestData.set(page.id, { labels: [], lastSynced: new Date().toISOString(), attachments: [], hasUnsupportedContent: false });
+      skippedCount++;
+      return;
+    }
+
     const existing = existingFiles.get(page.id);
     const isUpToDate =
       existing &&
       existing.path === vaultPath &&
       new Date(existing.lastSynced).getTime() >= new Date(page.versionDate).getTime();
 
-    completedCount++;
-    onProgress?.(completedCount, pagesToSync.length, page.title);
-
-    // Labels are pulled for every in-scope page on every run (they can change
-    // without bumping the page version).
+    // Labels are pulled for every page on every run (can change without bumping version).
     const labelsPromise = client.getPageLabels(page.id).catch((err) => {
       console.warn(`${LOG} failed to fetch labels for ${page.id} "${page.title}":`, err);
       return [] as string[];
