@@ -50,7 +50,7 @@ function computePaths(
     const sanitized = sanitizeTitle(node.page.title);
     if (node.children.length > 0) {
       const folderPath = `${parentPath}/${sanitized}`;
-      pathMap.set(node.page.id, `${folderPath}/index.md`);
+      pathMap.set(node.page.id, `${folderPath}/${sanitized}.md`);
       computePaths(node.children, folderPath, pathMap);
     } else {
       pathMap.set(node.page.id, `${parentPath}/${sanitized}.md`);
@@ -551,8 +551,10 @@ export async function runSyncForTarget(
       await writeManifestFile(vault, manifestPath, manifest);
       console.debug(`${LOG} manifest written: ${manifestPath} (${manifest.pageCount} pages)`);
     } else {
-      // Find the Confluence page whose vault path is the subtree root index
-      const subtreeRootId = findPageIdByVaultPath(filteredPages, pathMap, scope.vaultPath + '/index.md');
+      // Find the Confluence page whose vault path is the subtree root note.
+      // Parent pages are stored as FolderName/FolderName.md (not index.md).
+      const folderBasename = scope.vaultPath.split('/').pop() ?? '';
+      const subtreeRootId = findPageIdByVaultPath(filteredPages, pathMap, `${scope.vaultPath}/${folderBasename}.md`);
       const existingManifest = await readManifestFile(vault, manifestPath);
       if (existingManifest && subtreeRootId) {
         const subtreeRootNode = findPageNode(tree, subtreeRootId);
