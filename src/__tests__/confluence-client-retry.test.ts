@@ -80,3 +80,46 @@ describe('ConfluenceClient retry', () => {
     expect(requestUrl).toHaveBeenCalledTimes(4);
   });
 });
+
+describe('ConfluenceClient space scoping', () => {
+  beforeEach(() => {
+    requestUrl.mockReset();
+  });
+
+  // Regression: the v2 /pages endpoint only accepts `space-id` (numeric); an
+  // unrecognized `space-key` param is silently ignored and returns pages across
+  // the entire instance. Always scope page fetches by numeric space id.
+  it('queries /pages with space-id, not space-key', async () => {
+    requestUrl.mockResolvedValueOnce({ json: { results: [], _links: {} } });
+
+    const client = new ConfluenceClient('https://org.atlassian.net', 'e@x', 'tok');
+    await client.getSpacePages('123456', 'ENG');
+
+    expect(requestUrl).toHaveBeenCalledTimes(1);
+    const calledUrl = requestUrl.mock.calls[0][0].url as string;
+    expect(calledUrl).toContain('space-id=123456');
+    expect(calledUrl).not.toContain('space-key=');
+  });
+
+  it('resolves a space key to its numeric id via getSpaceByKey', async () => {
+    requestUrl.mockResolvedValueOnce({
+      json: {
+        results: [{ id: '987', name: 'Engineering', homepageId: '111' }],
+      },
+    });
+
+    const client = new ConfluenceClient('https://org.atlassian.net', 'e@x', 'tok');
+    const space = await client.getSpaceByKey('ENG');
+
+    expect(space).toEqual({ id: '987', name: 'Engineering', homepageId: '111' });
+    const calledUrl = requestUrl.mock.calls[0][0].url as string;
+    expect(calledUrl).toContain('keys=ENG');
+  });
+
+  it('throws a descriptive error when the space is not found', async () => {
+    requestUrl.mockResolvedValueOnce({ json: { results: [] } });
+
+    const client = new ConfluenceClient('https://org.atlassian.net', 'e@x', 'tok');
+    await expect(client.getSpaceByKey('MISSING')).rejects.toThrow(/MISSING/);
+  });
+});

@@ -381,13 +381,15 @@ export async function runSyncForTarget(
   const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
   const imageDownloader = new ImageDownloader(client, vault, maxImageDownloadSizeKb);
 
-  // 1. Fetch pages (with version dates), home page ID, and space name in parallel
-  console.debug(`${LOG} fetching page list…`);
-  const [pages, homePageId, spaceName] = await Promise.all([
-    client.getSpacePages(spaceKey),
-    client.getSpaceHomePageId(spaceKey),
-    client.checkSpaceAccess(spaceKey).catch(() => null),
-  ]);
+  // 1. Resolve the space's numeric ID (required to scope the v2 /pages query —
+  //    the API silently ignores an unknown `space-key` param and would return
+  //    every page in the instance). Then fetch the page list.
+  console.debug(`${LOG} resolving space "${spaceKey}"…`);
+  const space = await client.getSpaceByKey(spaceKey);
+  const spaceName = space.name;
+  const homePageId = space.homepageId;
+  console.debug(`${LOG} fetching page list for space id ${space.id}…`);
+  const pages = await client.getSpacePages(space.id, spaceKey);
   console.debug(`${LOG} ${pages.length} pages fetched, home page ID: ${homePageId ?? 'unknown'}`);
 
   // 2. Build tree rooted at space home page

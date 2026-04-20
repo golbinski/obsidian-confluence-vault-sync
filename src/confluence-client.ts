@@ -104,26 +104,36 @@ export class ConfluenceClient {
     return data.displayName ?? data.publicName ?? 'unknown user';
   }
 
-  /** Verifies that a space with the given key exists and is accessible. Returns the space name. */
-  async checkSpaceAccess(spaceKey: string): Promise<string> {
-    const data = await this.request<{ results: Array<{ name: string }> }>(
-      `${this.baseUrl}/wiki/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`
-    );
-    if (!data.results.length) {
+  /**
+   * Look up a space by its key and return its numeric id, display name, and
+   * home-page id. The numeric `id` is required for scoping v2 `/pages` queries
+   * (the v2 API does NOT accept `space-key` — passing it silently fetches
+   * pages across the entire instance).
+   */
+  async getSpaceByKey(
+    spaceKey: string
+  ): Promise<{ id: string; name: string; homepageId: string | null }> {
+    const data = await this.request<{
+      results: Array<{ id: string; name: string; homepageId?: string | null }>;
+    }>(`${this.baseUrl}/wiki/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`);
+    const space = data.results[0];
+    if (!space) {
       throw new Error(`Space "${spaceKey}" not found or not accessible`);
     }
-    return data.results[0].name;
+    return { id: space.id, name: space.name, homepageId: space.homepageId ?? null };
   }
 
-  /** Returns the ID of the space's designated home (root) page. */
-  async getSpaceHomePageId(spaceKey: string): Promise<string | null> {
-    const data = await this.request<{
-      results: Array<{ homepageId?: string }>;
-    }>(`${this.baseUrl}/wiki/api/v2/spaces?keys=${encodeURIComponent(spaceKey)}&limit=1`);
-    return data.results[0]?.homepageId ?? null;
+  /** Verifies that a space with the given key exists and is accessible. Returns the space name. */
+  async checkSpaceAccess(spaceKey: string): Promise<string> {
+    return (await this.getSpaceByKey(spaceKey)).name;
   }
 
-  async getSpacePages(spaceKey: string): Promise<ConfluencePage[]> {
+  /**
+   * Fetch all pages in a space. The v2 `/pages` endpoint is scoped by numeric
+   * `space-id`; callers must resolve the space key via `getSpaceByKey` first.
+   * The original `spaceKey` is echoed back into each `ConfluencePage.spaceKey`.
+   */
+  async getSpacePages(spaceId: string, spaceKey: string): Promise<ConfluencePage[]> {
     type SpacePagesResponse = {
       results: Array<{
         id: string;
@@ -135,7 +145,7 @@ export class ConfluenceClient {
     };
     const pages: ConfluencePage[] = [];
     let url: string | null =
-      `${this.baseUrl}/wiki/api/v2/pages?space-key=${encodeURIComponent(spaceKey)}&limit=250`;
+      `${this.baseUrl}/wiki/api/v2/pages?space-id=${encodeURIComponent(spaceId)}&limit=250`;
 
     while (url) {
       const data: SpacePagesResponse = await this.request<SpacePagesResponse>(url);
