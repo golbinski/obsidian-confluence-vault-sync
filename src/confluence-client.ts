@@ -169,6 +169,26 @@ export class ConfluenceClient {
     return pages;
   }
 
+  /**
+   * Fetch minimal metadata for any content ID using the v1 REST API.
+   * Used to resolve Confluence Folder entities (and other non-page types) that
+   * are excluded from the v2 /pages endpoint but appear as parentId references.
+   * Returns null if the content is inaccessible or not found.
+   */
+  async getContentById(id: string): Promise<{ id: string; title: string; parentId: string | null } | null> {
+    try {
+      const data = await this.request<{
+        id: string;
+        title: string;
+        ancestors?: Array<{ id: string }>;
+      }>(`${this.baseUrl}/wiki/rest/api/content/${id}?expand=ancestors`);
+      const parentId = data.ancestors?.at(-1)?.id ?? null;
+      return { id: data.id, title: data.title, parentId };
+    } catch {
+      return null;
+    }
+  }
+
   async getPageBody(pageId: string): Promise<AdfDocument> {
     const data = await this.request<{
       body: { atlas_doc_format: { value: string } };
