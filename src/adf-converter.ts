@@ -47,7 +47,7 @@ export class AdfConverter {
       }
 
       case 'blockquote': {
-        const inner = this.visitChildren(node, listDepth);
+        const inner = this.visitChildren(node, listDepth).trimEnd();
         return inner
           .split('\n')
           .map((line) => `> ${line}`)

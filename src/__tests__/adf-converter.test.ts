@@ -48,9 +48,11 @@ describe('AdfConverter', () => {
       expect(converter.convert(node)).toBe('```typescript\nconst x = 1;\n```\n\n');
     });
 
-    it('renders a blockquote', () => {
+    it('renders a blockquote without trailing empty > lines', () => {
       const node = doc({ type: 'blockquote', content: [p(text('quoted'))] });
-      expect(converter.convert(node)).toContain('> quoted');
+      const result = converter.convert(node);
+      expect(result).toContain('> quoted');
+      expect(result).not.toMatch(/^> \s*$/m);
     });
 
     it('renders an expand as a blockquote', () => {
