@@ -394,17 +394,20 @@ export async function runSyncForTarget(
   const pages = await client.getSpacePages(space.id, spaceKey);
   console.debug(`${LOG} ${pages.length} pages fetched, home page ID: ${homePageId ?? 'unknown'}`);
 
-  // 2. Build tree rooted at space home page
-  const fullTree = buildTree(pages);
-  let tree = fullTree;
+  // 2. Build the page tree from parentId links.
+  //    All 128 (or however many) pages returned by the space-scoped query belong
+  //    to this space. Some may have parentId pointing to a space-root container
+  //    (not a page entity), making them "roots" in our tree alongside the home
+  //    page. We sync ALL roots so no space content is silently dropped.
+  //    homePageId is kept only for manifest metadata.
+  const tree = buildTree(pages);
   if (homePageId) {
-    const homeRoot = fullTree.find((n) => n.page.id === homePageId);
-    if (homeRoot) {
-      tree = [homeRoot];
-      console.debug(`${LOG} rooted tree at home page "${homeRoot.page.title}"`);
-    } else {
-      console.warn(`${LOG} home page ${homePageId} not found — syncing all roots`);
-    }
+    const homeRoot = tree.find((n) => n.page.id === homePageId);
+    console.debug(
+      homeRoot
+        ? `${LOG} home page "${homeRoot.page.title}" found among ${tree.length} root(s)`
+        : `${LOG} home page ${homePageId} not found among tree roots`
+    );
   }
 
   // 3. Compute vault paths and flatten to ordered list
