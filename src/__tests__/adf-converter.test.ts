@@ -222,6 +222,43 @@ describe('AdfConverter', () => {
       expect(result).toContain('| --- | --- |');
       expect(result).toContain('| 1 | 2 |');
     });
+
+    it('produces no blank lines inside a multi-row table', () => {
+      const node = doc({
+        type: 'table',
+        content: [
+          { type: 'tableRow', content: [{ type: 'tableHeader', content: [p(text('H'))] }] },
+          { type: 'tableRow', content: [{ type: 'tableCell', content: [p(text('R1'))] }] },
+          { type: 'tableRow', content: [{ type: 'tableCell', content: [p(text('R2'))] }] },
+        ],
+      });
+      const result = converter.convert(node);
+      expect(result).not.toMatch(/\n\n/);
+    });
+
+    it('strips CR from cell content with Windows-style line endings', () => {
+      // A text node whose value contains \r\n (e.g. pasted Windows content)
+      const node = doc({
+        type: 'table',
+        content: [
+          { type: 'tableRow', content: [{ type: 'tableHeader', content: [p(text('H'))] }] },
+          {
+            type: 'tableRow',
+            content: [
+              {
+                type: 'tableCell',
+                content: [{ type: 'paragraph', content: [{ type: 'text', text: 'line1\r\nline2' }] }],
+              },
+            ],
+          },
+          { type: 'tableRow', content: [{ type: 'tableCell', content: [p(text('last'))] }] },
+        ],
+      });
+      const result = converter.convert(node);
+      expect(result).not.toMatch(/\r/);
+      expect(result).not.toMatch(/\n\n/);
+      expect(result).toContain('| last |');
+    });
   });
 
   describe('misc inline nodes', () => {

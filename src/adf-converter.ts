@@ -162,7 +162,7 @@ export class AdfConverter {
   private visitTableRow(node: AdfNode): string {
     const cells = node.content ?? [];
     const cellContents = cells.map((cell) => {
-      const inner = this.visitChildren(cell, 0).replace(/\n+/g, ' ').trim();
+      const inner = this.visitChildren(cell, 0).replace(/[\r\n]+/g, ' ').trim();
       return inner;
     });
     return '| ' + cellContents.join(' | ') + ' |';
