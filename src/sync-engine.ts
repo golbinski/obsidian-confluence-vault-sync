@@ -366,7 +366,9 @@ export async function runSyncForTarget(
   onProgress?: (current: number, total: number, label: string) => void,
   scope: PullScope = { kind: 'space' }
 ): Promise<number> {
-  const { spaceKey, syncFolderPath } = target;
+  const spaceKey = target.spaceKey;
+  // Normalize: strip any trailing slashes the user may have typed in settings
+  const syncFolderPath = target.syncFolderPath.replace(/\/+$/, '');
   const {
     confluenceBaseUrl,
     confluenceEmail,
@@ -423,8 +425,21 @@ export async function runSyncForTarget(
   const existingFiles = await scanExistingFiles(vault, syncFolderPath);
   console.debug(`${LOG} ${existingFiles.size} existing synced files found`);
 
-  // 5. Ensure sync folder exists
-  try { await vault.adapter.mkdir(syncFolderPath); } catch { /* exists */ }
+  // 5. Pre-create all directories needed for this sync pass.
+  //    Must happen sequentially and sorted by depth so parents exist before
+  //    children — vault.adapter.mkdir may not create intermediate directories,
+  //    and the parallel body-fetch below would otherwise race on mkdir calls.
+  {
+    const dirs = new Set<string>([syncFolderPath]);
+    for (const vaultPath of pathMap.values()) {
+      const dir = vaultPath.split('/').slice(0, -1).join('/');
+      if (dir) dirs.add(dir);
+    }
+    const sorted = [...dirs].sort((a, b) => a.split('/').length - b.split('/').length);
+    for (const dir of sorted) {
+      try { await vault.adapter.mkdir(dir); } catch { /* already exists */ }
+    }
+  }
 
   // Pre-load existing manifest so skipped (unchanged) pages keep their attachment data
   const existingManifest = await readManifestFile(vault, `${syncFolderPath}/manifest.json`);
@@ -490,11 +505,6 @@ export async function runSyncForTarget(
       }
 
       const adf = await client.getPageBody(page.id);
-
-      const dir = vaultPath.split('/').slice(0, -1).join('/');
-      if (dir) {
-        try { await vault.adapter.mkdir(dir); } catch { /* exists */ }
-      }
 
       const { markdown, attachments, hasUnsupportedContent } = await resolveMediaNodes(
         adf, page.id, syncFolderPath, imageDownloader, converter
@@ -576,7 +586,8 @@ export async function runPagePull(
   settings: ConfluenceVaultSyncSettings,
   vault: Vault
 ): Promise<void> {
-  const { spaceKey, syncFolderPath } = target;
+  const spaceKey = target.spaceKey;
+  const syncFolderPath = target.syncFolderPath.replace(/\/+$/, '');
   const { confluenceBaseUrl, confluenceEmail, confluenceApiToken, maxImageDownloadSizeKb } = settings;
 
   const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
