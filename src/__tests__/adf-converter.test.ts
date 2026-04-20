@@ -236,8 +236,7 @@ describe('AdfConverter', () => {
       expect(result).not.toMatch(/\n\n/);
     });
 
-    it('strips CR from cell content with Windows-style line endings', () => {
-      // A text node whose value contains \r\n (e.g. pasted Windows content)
+    it('strips CR and Windows-style line endings from cell content', () => {
       const node = doc({
         type: 'table',
         content: [
@@ -256,6 +255,31 @@ describe('AdfConverter', () => {
       });
       const result = converter.convert(node);
       expect(result).not.toMatch(/\r/);
+      expect(result).not.toMatch(/\n\n/);
+      expect(result).toContain('| last |');
+    });
+
+    it('strips Unicode line separators (U+2028/U+2029) from cell content', () => {
+      // U+2028 (LINE SEPARATOR) survives [\r\n] replace but Chromium treats
+      // it as a newline, splitting the table row and breaking Obsidian rendering.
+      const node = doc({
+        type: 'table',
+        content: [
+          { type: 'tableRow', content: [{ type: 'tableHeader', content: [p(text('H'))] }] },
+          {
+            type: 'tableRow',
+            content: [
+              {
+                type: 'tableCell',
+                content: [{ type: 'paragraph', content: [{ type: 'text', text: 'foo\u2028bar' }] }],
+              },
+            ],
+          },
+          { type: 'tableRow', content: [{ type: 'tableCell', content: [p(text('last'))] }] },
+        ],
+      });
+      const result = converter.convert(node);
+      expect(result).not.toContain('\u2028');
       expect(result).not.toMatch(/\n\n/);
       expect(result).toContain('| last |');
     });

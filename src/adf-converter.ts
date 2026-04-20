@@ -162,7 +162,9 @@ export class AdfConverter {
   private visitTableRow(node: AdfNode): string {
     const cells = node.content ?? [];
     const cellContents = cells.map((cell) => {
-      const inner = this.visitChildren(cell, 0).replace(/[\r\n]+/g, ' ').trim();
+      // Collapse all line-terminator characters (including Unicode U+2028/U+2029
+      // which Chromium treats as line breaks and would split the table row).
+      const inner = this.visitChildren(cell, 0).replace(/[\r\n\u2028\u2029]+/g, ' ').trim();
       return inner;
     });
     return '| ' + cellContents.join(' | ') + ' |';
