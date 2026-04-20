@@ -77,12 +77,26 @@ export class ImageDownloader {
 
     const mediaType = attachment.metadata.mediaType;
     const fileSize = attachment.extensions.fileSize;
-    const downloadUrl = `${baseUrl}${attachment._links.download}`;
+    const rawDownload = attachment._links.download;
+    // Confluence sometimes returns download paths without the /wiki prefix;
+    // normalise to always include it so the constructed URL resolves correctly.
+    const downloadPath = rawDownload.startsWith('/wiki/') ? rawDownload : `/wiki${rawDownload}`;
+    const downloadUrl = `${baseUrl}${downloadPath}`;
     const filename = attachment.title;
 
     if (mediaType.startsWith('image/')) {
       if (fileSize <= this.maxSizeBytes) {
-        const binary = await this.client.fetchBinary(downloadUrl);
+        let binary: ArrayBuffer;
+        try {
+          binary = await this.client.fetchBinary(downloadUrl);
+        } catch (err) {
+          console.warn(
+            `[Confluence Vault Sync] media download failed for "${filename}" (${mediaType}, ${fileSize}B)`,
+            `rawDownload=${rawDownload}`,
+            err
+          );
+          return { markdown: `![${filename}](${downloadUrl})`, filename: null, mimeType: null };
+        }
         const attachmentsDir = `${syncFolderPath}/attachments`;
         const filePath = `${attachmentsDir}/${filename}`;
 

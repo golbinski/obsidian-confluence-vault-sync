@@ -68,7 +68,9 @@ export class AdfConverter {
 
       case 'inlineCard': {
         const url = (node.attrs?.url as string) ?? '';
-        return this.rewriteConfluenceLink(url);
+        const resolved = this.rewriteConfluenceLink(url);
+        if (resolved.kind === 'wikilink') return `[[${resolved.target}]]`;
+        return `[${resolved.url}](${resolved.url})`;
       }
 
       case 'mediaSingle':
@@ -83,9 +85,10 @@ export class AdfConverter {
         // Best-effort: preserve whatever URL lives in the macro params so the
         // embed is at least clickable in Obsidian. Push remains blocked via
         // hasUnsupportedContent — we don't attempt to reconstruct the node.
-        const url = extractExtensionUrl(node.attrs?.parameters);
+        const url = extractExtensionUrl(node.attrs?.parameters, key);
+        const label = extensionLabel(key);
         const isInline = node.type === 'inlineExtension';
-        const link = url ? `[${key}](${url})` : `[${key}]`;
+        const link = url ? `[${label}](${url})` : `[${label}]`;
         return isInline ? link : `${link}\n\n`;
       }
 
@@ -183,7 +186,12 @@ export class AdfConverter {
           break;
         case 'link': {
           const href = (mark.attrs?.href as string) ?? '';
-          result = `[${result}](${this.rewriteConfluenceLink(href)})`;
+          const resolved = this.rewriteConfluenceLink(href);
+          if (resolved.kind === 'wikilink') {
+            result = `[[${resolved.target}|${result}]]`;
+          } else {
+            result = `[${result}](${resolved.url})`;
+          }
           break;
         }
         case 'subsup':
@@ -200,7 +208,7 @@ export class AdfConverter {
     return result;
   }
 
-  private rewriteConfluenceLink(url: string): string {
+  private rewriteConfluenceLink(url: string): { kind: 'wikilink'; target: string } | { kind: 'url'; url: string } {
     // Only rewrite links that are either root-relative (`/wiki/...`) or
     // absolute against the configured Confluence base URL. Anchored at the
     // start so that unrelated external URLs containing `/wiki/spaces/.../pages/`
@@ -213,12 +221,11 @@ export class AdfConverter {
       const pageId = match[1];
       const vaultPath = this.pageIndex.get(pageId);
       if (vaultPath) {
-        // Use just the filename portion without extension for wiki link
         const filename = vaultPath.split('/').pop()?.replace(/\.md$/, '') ?? vaultPath;
-        return `[[${filename}]]`;
+        return { kind: 'wikilink', target: filename };
       }
     }
-    return url;
+    return { kind: 'url', url };
   }
 }
 
@@ -226,12 +233,22 @@ function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
+/** Maps extensionKey prefixes to human-readable labels. */
+function extensionLabel(key: string): string {
+  if (key.startsWith('miro')) return 'Miro board';
+  if (key.startsWith('lucidchart')) return 'Lucidchart';
+  if (key.startsWith('drawio') || key.startsWith('draw.io')) return 'draw.io';
+  if (key.startsWith('figma')) return 'Figma';
+  return key;
+}
+
 /**
  * Best-effort URL extraction from an ADF extension node's parameters.
  * Scans macroParams values recursively for any string starting with "http".
+ * For Miro macros, also constructs the board URL from a boardId parameter.
  * Returns the first URL found, or null if none.
  */
-function extractExtensionUrl(parameters: unknown): string | null {
+function extractExtensionUrl(parameters: unknown, extensionKey = ''): string | null {
   if (!parameters || typeof parameters !== 'object') return null;
 
   function scan(obj: unknown): string | null {
@@ -244,5 +261,22 @@ function extractExtensionUrl(parameters: unknown): string | null {
     return null;
   }
 
-  return scan(parameters);
+  const found = scan(parameters);
+  if (found) return found;
+
+  // Miro-specific: board URL can be reconstructed from boardId or contentId param
+  if (extensionKey.startsWith('miro')) {
+    const params = (parameters as Record<string, unknown>);
+    const macroParams = params.macroParams as Record<string, unknown> | undefined;
+    if (macroParams) {
+      const boardId =
+        (macroParams.boardId as Record<string, unknown>)?.value ??
+        (macroParams.contentId as Record<string, unknown>)?.value;
+      if (typeof boardId === 'string' && boardId) {
+        return `https://miro.com/app/board/${boardId}`;
+      }
+    }
+  }
+
+  return null;
 }

@@ -101,11 +101,28 @@ describe('AdfConverter', () => {
       expect(converter.convert(node)).toContain('https://org.atlassian.net/wiki/spaces/ENG/pages/99');
     });
 
-    it('rewrites a link mark pointing to a Confluence page', () => {
+    it('rewrites a link mark pointing to a Confluence page (same display text)', () => {
       const index = new Map([['7', 'confluence/eng/Setup.md']]);
       const c = new AdfConverter(index, 'https://org.atlassian.net');
       const node = doc(p(text('Setup', { type: 'link', attrs: { href: 'https://org.atlassian.net/wiki/spaces/ENG/pages/7' } })));
-      expect(c.convert(node)).toContain('[[Setup]]');
+      expect(c.convert(node)).toContain('[[Setup|Setup]]');
+    });
+
+    it('rewrites a link mark pointing to a Confluence page (custom display text)', () => {
+      const index = new Map([['7', 'confluence/eng/Setup.md']]);
+      const c = new AdfConverter(index, 'https://org.atlassian.net');
+      const node = doc(p(text('Click here', { type: 'link', attrs: { href: 'https://org.atlassian.net/wiki/spaces/ENG/pages/7' } })));
+      expect(c.convert(node)).toContain('[[Setup|Click here]]');
+    });
+
+    it('wraps a non-Confluence link mark as standard markdown link', () => {
+      const node = doc(p(text('Google', { type: 'link', attrs: { href: 'https://google.com' } })));
+      expect(converter.convert(node)).toContain('[Google](https://google.com)');
+    });
+
+    it('wraps an inlineCard external URL as a clickable markdown link', () => {
+      const node = doc(p({ type: 'inlineCard', attrs: { url: 'https://external.example.com/page' } }));
+      expect(converter.convert(node)).toContain('[https://external.example.com/page](https://external.example.com/page)');
     });
 
     it('rewrites a root-relative Confluence URL', () => {
@@ -247,7 +264,7 @@ describe('AdfConverter', () => {
       expect(converter.convert(node)).toBe('[widget]\n\nafter\n\n');
     });
 
-    it('renders unknown extension as [key](url) when a URL is found in macroParams', () => {
+    it('renders known extension key with friendly label and URL', () => {
       const node = doc({
         type: 'extension',
         attrs: {
@@ -260,7 +277,7 @@ describe('AdfConverter', () => {
           },
         },
       });
-      expect(converter.convert(node)).toBe('[lucidchart](https://lucid.app/chart/abc123)\n\n');
+      expect(converter.convert(node)).toBe('[Lucidchart](https://lucid.app/chart/abc123)\n\n');
     });
 
     it('renders inline extension without trailing newlines', () => {
@@ -272,8 +289,27 @@ describe('AdfConverter', () => {
           parameters: { macroParams: { boardUrl: { value: 'https://miro.com/app/board/xyz' } } },
         },
       }));
-      // inlineExtension inside paragraph — no \n\n suffix on the link itself
-      expect(converter.convert(node)).toContain('[miro](https://miro.com/app/board/xyz)');
+      expect(converter.convert(node)).toContain('[Miro board](https://miro.com/app/board/xyz)');
+    });
+
+    it('renders miro-macro-resizing with boardId param as clickable Miro board link', () => {
+      const node = doc({
+        type: 'extension',
+        attrs: {
+          extensionKey: 'miro-macro-resizing',
+          parameters: { macroParams: { boardId: { value: 'uXjVIzABcDE=' } } },
+        },
+      });
+      expect(converter.convert(node)).toBe('[Miro board](https://miro.com/app/board/uXjVIzABcDE=)\n\n');
+    });
+
+    it('renders miro-macro-resizing with no URL as [Miro board] not raw key', () => {
+      const node = doc({
+        type: 'extension',
+        attrs: { extensionKey: 'miro-macro-resizing', parameters: {} },
+      });
+      expect(converter.convert(node)).toBe('[Miro board]\n\n');
+      expect(converter.convert(node)).not.toContain('miro-macro-resizing');
     });
 
     it('extracts URL nested inside macroParams value object', () => {

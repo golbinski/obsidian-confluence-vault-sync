@@ -757,16 +757,30 @@ export async function resolveMediaNodes(
 
     if (node.type === 'media') {
       const mediaId = (node.attrs?.id as string) ?? '';
+      const mediaType = (node.attrs?.type as string) ?? '';
       const collection = (node.attrs?.collection as string) ?? '';
-      if (mediaId && !mediaReplacements.has(mediaId)) {
+
+      // External media has a direct URL — no attachment fetch needed.
+      if (mediaType === 'external') {
+        const extUrl = (node.attrs?.url as string) ?? '';
+        if (extUrl && !mediaReplacements.has(mediaId || extUrl)) {
+          const key = mediaId || extUrl;
+          mediaReplacements.set(key, `![external media](${extUrl})`);
+        }
+      } else if (mediaId && !mediaReplacements.has(mediaId)) {
+        // Derive the attachment-owning page from the collection (contentId-<pageId>).
+        // Falls back to current pageId if collection is absent or unparseable.
+        const collectionPageId = collection.startsWith('contentId-')
+          ? collection.slice('contentId-'.length)
+          : pageId;
         try {
-          const result = await imageDownloader.handleMedia(pageId, mediaId, syncFolderPath);
+          const result = await imageDownloader.handleMedia(collectionPageId, mediaId, syncFolderPath);
           mediaReplacements.set(mediaId, result.markdown);
           if (result.filename && result.mimeType) {
             attachments.push({ mediaId, collection, filename: result.filename, mimeType: result.mimeType });
           }
         } catch (err) {
-          console.warn(`${LOG} failed to download media ${mediaId}:`, err);
+          console.warn(`${LOG} failed to download media ${mediaId} (collection=${collection}):`, err);
           mediaReplacements.set(mediaId, '[attachment unavailable]');
         }
       }
@@ -785,7 +799,9 @@ export async function resolveMediaNodes(
   ): import('./confluence-client').AdfNode {
     if (node.type === 'media') {
       const mediaId = (node.attrs?.id as string) ?? '';
-      const replacement = mediaReplacements.get(mediaId) ?? '[attachment]';
+      const extUrl = (node.attrs?.url as string) ?? '';
+      const key = mediaId || extUrl;
+      const replacement = mediaReplacements.get(key) ?? '[attachment]';
       return { type: 'text', text: replacement };
     }
     if (node.content) {
