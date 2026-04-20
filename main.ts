@@ -1,6 +1,7 @@
 import {
   App,
   ButtonComponent,
+  MarkdownView,
   Notice,
   Plugin,
   PluginSettingTab,
@@ -100,19 +101,41 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
       })
     );
 
-    // Read-only enforcement: revert edits to locked synced files.
-    // Skip the revert if the file has been explicitly unlocked (writable).
+    // Read-only enforcement: keep locked synced files in reading mode.
+    // When a leaf switches to edit mode for a locked managed file, silently
+    // flip it back to preview mode so the user never sees the editor.
+    const enforceReadingMode = (): void => {
+      const leaf = this.app.workspace.activeLeaf;
+      if (!leaf) return;
+      const view = leaf.view;
+      if (!(view instanceof MarkdownView)) return;
+      if (view.getMode() === 'preview') return;
+
+      const file = view.file;
+      if (!file) return;
+      const isManaged = this.settings.syncTargets.some((t) =>
+        file.path.startsWith(t.syncFolderPath + '/')
+      );
+      if (!isManaged) return;
+      if (isWritable(this.app.vault, file.path)) return;
+
+      // Switch back to reading mode without any popup
+      void leaf.setViewState({ ...leaf.getViewState(), state: { ...leaf.getViewState().state, mode: 'preview' } });
+    };
+
+    this.registerEvent(this.app.workspace.on('active-leaf-change', enforceReadingMode));
+    this.registerEvent(this.app.workspace.on('layout-change', enforceReadingMode));
+
+    // Fallback content-revert in case a modification slips through (e.g. from
+    // another plugin or a macro), without showing a disruptive notice.
     this.registerEvent(
       this.app.vault.on('modify', (file) => {
         const isManaged = this.settings.syncTargets.some((t) =>
           file.path.startsWith(t.syncFolderPath + '/')
         );
         if (!isManaged) return;
-
-        // If the file is writable, the user unlocked it intentionally — don't revert
         if (isWritable(this.app.vault, file.path)) return;
 
-        new Notice('This file is managed by Confluence vault sync and cannot be edited.');
         this.app.vault.adapter
           .read(file.path)
           .then((content) => this.app.vault.adapter.write(file.path, content))
