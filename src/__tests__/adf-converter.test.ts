@@ -107,14 +107,14 @@ describe('AdfConverter', () => {
       const index = new Map([['7', 'confluence/eng/Setup.md']]);
       const c = new AdfConverter(index, 'https://org.atlassian.net');
       const node = doc(p(text('Setup', { type: 'link', attrs: { href: 'https://org.atlassian.net/wiki/spaces/ENG/pages/7' } })));
-      expect(c.convert(node)).toContain('[[Setup|Setup]]');
+      expect(c.convert(node)).toContain('[Setup](confluence/eng/Setup.md)');
     });
 
     it('rewrites a link mark pointing to a Confluence page (custom display text)', () => {
       const index = new Map([['7', 'confluence/eng/Setup.md']]);
       const c = new AdfConverter(index, 'https://org.atlassian.net');
       const node = doc(p(text('Click here', { type: 'link', attrs: { href: 'https://org.atlassian.net/wiki/spaces/ENG/pages/7' } })));
-      expect(c.convert(node)).toContain('[[Setup|Click here]]');
+      expect(c.convert(node)).toContain('[Click here](confluence/eng/Setup.md)');
     });
 
     it('wraps a non-Confluence link mark as standard markdown link', () => {
@@ -221,6 +221,30 @@ describe('AdfConverter', () => {
       expect(result).toContain('| A | B |');
       expect(result).toContain('| --- | --- |');
       expect(result).toContain('| 1 | 2 |');
+    });
+
+    it('renders Confluence link marks inside table cells without pipe characters', () => {
+      const index = new Map([['7', 'confluence/eng/Setup.md']]);
+      const c = new AdfConverter(index, 'https://org.atlassian.net');
+      const node = doc({
+        type: 'table',
+        content: [
+          { type: 'tableRow', content: [{ type: 'tableHeader', content: [p(text('Link'))] }] },
+          {
+            type: 'tableRow',
+            content: [
+              {
+                type: 'tableCell',
+                content: [p(text('See', { type: 'link', attrs: { href: 'https://org.atlassian.net/wiki/spaces/ENG/pages/7' } }))],
+              },
+            ],
+          },
+        ],
+      });
+      const result = c.convert(node);
+      // Standard MD link — no pipe character, table structure intact
+      expect(result).toContain('[See](confluence/eng/Setup.md)');
+      expect(result).not.toContain('[[');
     });
 
     it('produces no blank lines inside a multi-row table', () => {
