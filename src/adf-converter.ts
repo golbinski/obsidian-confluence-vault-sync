@@ -164,9 +164,12 @@ export class AdfConverter {
     const cellContents = cells.map((cell) => {
       // Collapse all line-terminator characters (including Unicode U+2028/U+2029
       // which Chromium treats as line breaks and would split the table row).
+      // Escape remaining | so that wikilinks like [[Page|text]] don't get
+      // split across cells — Obsidian recognises [[Page\|text]] correctly.
       const inner = this.visitChildren(cell, 0)
         .replace(/[\r\n\u2028\u2029]+/g, ' ')
-        .trim();
+        .trim()
+        .replace(/\|/g, '\\|');
       return inner;
     });
     return '| ' + cellContents.join(' | ') + ' |';
@@ -192,9 +195,7 @@ export class AdfConverter {
           const href = (mark.attrs?.href as string) ?? '';
           const resolved = this.rewriteConfluenceLink(href);
           if (resolved.kind === 'wikilink') {
-            // Use standard MD link with vault path — avoids the [[target|text]]
-            // pipe character which breaks Markdown table cell parsing.
-            result = `[${result}](${resolved.vaultPath})`;
+            result = `[[${resolved.target}|${result}]]`;
           } else {
             result = `[${result}](${resolved.url})`;
           }
@@ -214,7 +215,7 @@ export class AdfConverter {
     return result;
   }
 
-  private rewriteConfluenceLink(url: string): { kind: 'wikilink'; target: string; vaultPath: string } | { kind: 'url'; url: string } {
+  private rewriteConfluenceLink(url: string): { kind: 'wikilink'; target: string } | { kind: 'url'; url: string } {
     // Only rewrite links that are either root-relative (`/wiki/...`) or
     // absolute against the configured Confluence base URL. Anchored at the
     // start so that unrelated external URLs containing `/wiki/spaces/.../pages/`
@@ -228,7 +229,7 @@ export class AdfConverter {
       const vaultPath = this.pageIndex.get(pageId);
       if (vaultPath) {
         const target = vaultPath.split('/').pop()?.replace(/\.md$/, '') ?? vaultPath;
-        return { kind: 'wikilink', target, vaultPath };
+        return { kind: 'wikilink', target };
       }
     }
     return { kind: 'url', url };
