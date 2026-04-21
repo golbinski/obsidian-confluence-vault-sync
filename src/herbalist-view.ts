@@ -188,7 +188,12 @@ function parseSearchResults(raw: unknown): SearchResult[] {
     if (typeof raw === 'object' && raw !== null && 'content' in raw) {
       const content = (raw as { content: Array<{ type: string; text: string }> }).content;
       if (Array.isArray(content) && content[0]?.type === 'text') {
-        return JSON.parse(content[0].text) as SearchResult[];
+        const parsed: unknown = JSON.parse(content[0].text);
+        // herbalist returns { results: [...] }
+        if (parsed && typeof parsed === 'object' && Array.isArray((parsed as { results?: unknown }).results)) {
+          return (parsed as { results: SearchResult[] }).results;
+        }
+        if (Array.isArray(parsed)) return parsed as SearchResult[];
       }
     }
   } catch { /* fall through */ }
