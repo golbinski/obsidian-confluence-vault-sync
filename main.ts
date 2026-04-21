@@ -55,7 +55,7 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     });
 
     // Ribbon: changes pane
-    this.addRibbonIcon('git-pull-request', 'Confluence changes', () => {
+    this.addRibbonIcon('upload-cloud', 'Confluence changes', () => {
       this.openWritebackView();
     });
 

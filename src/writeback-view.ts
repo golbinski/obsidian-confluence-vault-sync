@@ -91,7 +91,7 @@ export class WritebackView extends ItemView {
 
   getViewType(): string { return WRITEBACK_VIEW_TYPE; }
   getDisplayText(): string { return 'Confluence changes'; }
-  getIcon(): string { return 'git-pull-request'; }
+  getIcon(): string { return 'upload-cloud'; }
 
   async onOpen(): Promise<void> {
     this.registerEvent(
