@@ -10,10 +10,16 @@ export function resolveHerbalistDbPath(vaultRoot: string, scope: 'vault' | 'conf
 
 export function detectHerbalistBinary(): string {
   const os = require('os') as typeof import('os');
-  const candidates = [
-    path.join(os.homedir(), '.local', 'bin', 'herbalist-mcp'),
-    '/usr/local/bin/herbalist-mcp',
-  ];
+  const home = os.homedir();
+  const candidates: string[] =
+    process.platform === 'win32'
+      ? [
+          path.join(process.env['LOCALAPPDATA'] ?? path.join(home, 'AppData', 'Local'), 'herbalist-mcp', 'herbalist-mcp.exe'),
+        ]
+      : [
+          path.join(home, '.local', 'bin', 'herbalist-mcp'),
+          '/usr/local/bin/herbalist-mcp',
+        ];
   return candidates.find((p) => existsSync(p)) ?? candidates[0];
 }
 
