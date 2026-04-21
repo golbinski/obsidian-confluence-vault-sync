@@ -100,7 +100,7 @@ export class HerbalistView extends ItemView {
     const dbPath = resolveHerbalistDbPath(vaultRoot, this.plugin.settings.herbalistIndexScope);
     const bin = this.plugin.settings.herbalistBinaryPath || 'herbalist-mcp';
 
-    const proc = spawn(bin, ['serve', '--vault', vaultRoot, '--db', dbPath], {
+    const proc = spawn(bin, ['serve', '--vault', vaultRoot, '--db', dbPath, '--skip-index'], {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 
