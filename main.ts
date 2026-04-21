@@ -1,6 +1,7 @@
 import {
   App,
   ButtonComponent,
+  FileSystemAdapter,
   MarkdownView,
   Notice,
   Plugin,
@@ -17,6 +18,8 @@ import {
 import { encryptToken, decryptToken, isEncryptionAvailable } from './src/token-crypto';
 import { runSyncForTarget, runPagePull, type PullScope } from './src/sync-engine';
 import { WritebackView, WRITEBACK_VIEW_TYPE } from './src/writeback-view';
+import { HerbalistView, HERBALIST_VIEW_TYPE } from './src/herbalist-view';
+import { detectHerbalistBinary, runHerbalistIndex } from './src/herbalist';
 import { isWritable, findUnlockedFiles, extractFrontmatterField } from './src/fs-utils';
 
 /** Returns the sync target that owns filePath, or null if unmanaged. */
@@ -42,8 +45,9 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
 
     this.statusBarEl = this.addStatusBarItem();
 
-    // Register writeback view
+    // Register views
     this.registerView(WRITEBACK_VIEW_TYPE, (leaf) => new WritebackView(leaf, this));
+    this.registerView(HERBALIST_VIEW_TYPE, (leaf) => new HerbalistView(leaf, this));
 
     // Ribbon: sync
     this.addRibbonIcon('refresh-cw', 'Sync confluence', () => {
@@ -66,6 +70,12 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
       id: 'open-confluence-changes',
       name: 'Open confluence changes',
       callback: () => { this.openWritebackView(); },
+    });
+
+    this.addCommand({
+      id: 'open-herbalist-search',
+      name: 'Open Confluence search',
+      callback: () => { this.openHerbalistView(); },
     });
 
     // Settings tab
@@ -157,11 +167,28 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     }
   }
 
+  openHerbalistView(): void {
+    const existing = this.app.workspace.getLeavesOfType(HERBALIST_VIEW_TYPE);
+    if (existing.length > 0) {
+      void this.app.workspace.revealLeaf(existing[0]);
+      return;
+    }
+    const leaf = this.app.workspace.getRightLeaf(false);
+    if (leaf) {
+      void leaf.setViewState({ type: HERBALIST_VIEW_TYPE, active: true });
+      void this.app.workspace.revealLeaf(leaf);
+    }
+  }
+
   async loadSettings(): Promise<void> {
     const data = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
     // Decrypt token from disk into the in-memory settings field
     this.settings.confluenceApiToken = decryptToken(this.settings.confluenceApiToken);
+    // Auto-detect herbalist binary on first load
+    if (!this.settings.herbalistBinaryPath) {
+      this.settings.herbalistBinaryPath = detectHerbalistBinary();
+    }
   }
 
   async saveSettings(): Promise<void> {
@@ -233,6 +260,9 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
         `Sync complete — ${synced} space${synced !== 1 ? 's' : ''}, ${totalPages} pages synced` +
         (skippedSpaces.length > 0 ? ` (${skippedSpaces.join(', ')} skipped)` : '')
       );
+      if (this.app.vault.adapter instanceof FileSystemAdapter) {
+        runHerbalistIndex(this, this.app.vault.adapter.getBasePath());
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new Notice(`Sync failed: ${message}`);
@@ -281,6 +311,9 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
         scope
       );
       new Notice(`Sync complete — ${target.spaceKey}: ${count} pages synced`);
+      if (this.app.vault.adapter instanceof FileSystemAdapter) {
+        runHerbalistIndex(this, this.app.vault.adapter.getBasePath());
+      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       new Notice(`Sync failed: ${message}`);
@@ -478,6 +511,62 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
           }
         });
       });
+
+    // Herbalist integration section
+    new Setting(containerEl).setName('Herbalist integration').setHeading();
+
+    const s = this.plugin.settings;
+
+    const toggleDeps = (enabled: boolean): void => {
+      depSettings.forEach((d) => { d.settingEl.style.display = enabled ? '' : 'none'; });
+    };
+
+    new Setting(containerEl)
+      .setName('Enable Herbalist')
+      .setDesc('Re-index after each sync and enable semantic search over Confluence notes. Requires herbalist-mcp to be installed.')
+      .addToggle((t) =>
+        t.setValue(s.herbalistEnabled).onChange(async (v) => {
+          s.herbalistEnabled = v;
+          await this.plugin.saveSettings();
+          toggleDeps(v);
+        })
+      );
+
+    const binarySetting = new Setting(containerEl)
+      .setName('Binary path')
+      .setDesc('Path to the herbalist-mcp executable.')
+      .addText((t) =>
+        t.setValue(s.herbalistBinaryPath)
+          .onChange(async (v) => { s.herbalistBinaryPath = v.trim(); await this.plugin.saveSettings(); })
+      );
+
+    const scopeSetting = new Setting(containerEl)
+      .setName('Index scope')
+      .setDesc('Which notes to include in the semantic index.')
+      .addDropdown((d) =>
+        d.addOption('confluence', 'Confluence sync folders only')
+          .addOption('vault', 'Entire vault')
+          .setValue(s.herbalistIndexScope)
+          .onChange(async (v) => {
+            s.herbalistIndexScope = v as 'vault' | 'confluence';
+            await this.plugin.saveSettings();
+          })
+      );
+
+    const modelSetting = new Setting(containerEl)
+      .setName('Embedding model')
+      .setDesc('Downloaded once on first use. Larger models give better results but are slower.')
+      .addDropdown((d) =>
+        d.addOption('bge-small-en-v1.5', 'bge-small-en-v1.5 — 130 MB (recommended)')
+          .addOption('all-minilm-l6-v2', 'all-minilm-l6-v2 — 90 MB (fastest)')
+          .addOption('bge-base-en-v1.5', 'bge-base-en-v1.5 — 440 MB')
+          .addOption('nomic-embed-text-v1.5', 'nomic-embed-text-v1.5 — 550 MB')
+          .setValue(s.herbalistModel)
+          .onChange(async (v) => { s.herbalistModel = v; await this.plugin.saveSettings(); })
+      );
+
+    const depSettings = [binarySetting, scopeSetting, modelSetting];
+    toggleDeps(s.herbalistEnabled);
 
     // Sync targets section
     new Setting(containerEl).setName('Sync targets').setHeading();

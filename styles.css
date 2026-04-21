@@ -113,3 +113,59 @@
 .cvs-danger-btn {
   color: var(--color-red);
 }
+
+/* Herbalist search view */
+.cvs-herbalist-container {
+  padding: 12px;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+}
+
+.cvs-herbalist-input-row {
+  display: flex;
+  gap: 6px;
+  margin-bottom: 10px;
+}
+
+.cvs-herbalist-input {
+  flex: 1;
+}
+
+.cvs-herbalist-btn {
+  flex-shrink: 0;
+}
+
+.cvs-herbalist-results {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.cvs-herbalist-result-row {
+  padding: 6px 4px;
+  border-radius: 4px;
+  cursor: pointer;
+  margin-bottom: 4px;
+}
+
+.cvs-herbalist-result-row:hover {
+  background: var(--background-modifier-hover);
+}
+
+.cvs-herbalist-result-title {
+  font-weight: 600;
+}
+
+.cvs-herbalist-result-snippet {
+  font-size: 0.85em;
+  opacity: 0.7;
+  margin-top: 2px;
+}
+
+.cvs-herbalist-loading,
+.cvs-herbalist-empty,
+.cvs-herbalist-error {
+  opacity: 0.6;
+  font-size: 0.9em;
+  padding: 8px 4px;
+}
