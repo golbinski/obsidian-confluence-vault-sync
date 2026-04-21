@@ -22,6 +22,15 @@ An [Obsidian](https://obsidian.md) plugin that syncs one or more Confluence Clou
 - A Confluence Cloud instance with API access.
 - An [Atlassian API token](https://id.atlassian.com/manage-profile/security/api-tokens) for your account.
 
+## Recommended companion plugins
+
+These community plugins are not required but improve the experience with synced content:
+
+| Plugin | Why it helps |
+|---|---|
+| [Automatic Table of Contents](https://obsidian.md/plugins?id=automatic-table-of-contents) | Confluence pages with a TOC macro sync as a ` ```table-of-contents ``` ` code block. This plugin renders it as a live, auto-updating table of contents in reading mode. |
+| [Folder notes](https://obsidian.md/plugins?id=folder-notes) | Parent Confluence pages (those with children) sync as `index.md` files inside a folder. The Folder notes plugin makes the folder and its index file behave as a single navigable note, matching the Confluence page tree layout. |
+
 ## Installation
 
 This plugin is not yet listed in the Obsidian community plugin browser. Install it manually:
