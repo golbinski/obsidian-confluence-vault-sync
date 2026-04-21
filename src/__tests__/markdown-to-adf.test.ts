@@ -161,6 +161,19 @@ describe('markdownToAdf', () => {
       const [node] = convert('See [TOC] above');
       expect(node.type).toBe('paragraph');
     });
+
+    it('converts ```table-of-contents``` fence to a toc extension node', () => {
+      const [node] = convert('```table-of-contents\n```');
+      expect(node.type).toBe('extension');
+      expect(node.attrs?.extensionKey).toBe('toc');
+      expect(node.attrs?.extensionType).toBe('com.atlassian.confluence.macro.core');
+    });
+
+    it('```table-of-contents``` fence followed by text produces two separate nodes', () => {
+      const nodes = convert('```table-of-contents\n```\n\nSome text');
+      expect(nodes[0].type).toBe('extension');
+      expect(nodes[1].type).toBe('paragraph');
+    });
   });
 
   describe('wikilinks', () => {

@@ -81,7 +81,7 @@ export class AdfConverter {
       case 'bodiedExtension':
       case 'inlineExtension': {
         const key = (node.attrs?.extensionKey as string) ?? 'extension';
-        if (key === 'toc') return '[TOC]\n\n';
+        if (key === 'toc') return '```table-of-contents\n```\n\n';
         // Best-effort: preserve whatever URL lives in the macro params so the
         // embed is at least clickable in Obsidian. Push remains blocked via
         // hasUnsupportedContent — we don't attempt to reconstruct the node.

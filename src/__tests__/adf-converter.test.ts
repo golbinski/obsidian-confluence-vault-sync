@@ -332,7 +332,7 @@ describe('AdfConverter', () => {
   });
 
   describe('extensions', () => {
-    it('renders a toc extension as [TOC]', () => {
+    it('renders a toc extension as a table-of-contents code fence', () => {
       const node = doc({
         type: 'extension',
         attrs: {
@@ -340,7 +340,7 @@ describe('AdfConverter', () => {
           extensionKey: 'toc',
         },
       });
-      expect(converter.convert(node)).toBe('[TOC]\n\n');
+      expect(converter.convert(node)).toBe('```table-of-contents\n```\n\n');
     });
 
     it('renders unknown extension as [key] placeholder when no URL is available', () => {

@@ -48,6 +48,23 @@ function parseBlocks(
       continue;
     }
 
+    // Table of contents fence (```table-of-contents```) — must precede generic code block handler
+    if (line.trim() === '```table-of-contents') {
+      i++;
+      while (i < end && !lines[i].match(/^```\s*$/)) i++; // skip any content inside
+      i++; // consume closing ```
+      nodes.push({
+        type: 'extension',
+        attrs: {
+          extensionType: 'com.atlassian.confluence.macro.core',
+          extensionKey: 'toc',
+          layout: 'default',
+          parameters: { macroParams: {} },
+        },
+      });
+      continue;
+    }
+
     // Fenced code block
     if (line.match(/^```/)) {
       const lang = line.slice(3).trim();
@@ -174,6 +191,7 @@ function isBlockStart(line: string): boolean {
     line.match(/^(\s*)\d+\.\s/) ||
     line.match(/^\|/) ||
     line.trim() === '[TOC]' ||
+    line.trim() === '```table-of-contents' ||
     extractStandaloneImageFilename(line) !== null
   );
 }
