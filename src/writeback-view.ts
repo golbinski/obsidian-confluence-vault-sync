@@ -1,4 +1,4 @@
-import { ItemView, Modal, Notice, WorkspaceLeaf } from 'obsidian';
+import { ItemView, Modal, Notice, WorkspaceLeaf, setIcon } from 'obsidian';
 import type ConfluenceVaultSyncPlugin from '../main';
 import { ConfluenceClient } from './confluence-client';
 import { AdfConverter } from './adf-converter';
@@ -202,7 +202,8 @@ export class WritebackView extends ItemView {
     // Header
     const header = container.createDiv({ cls: 'nav-header cvs-view-header' });
     header.createEl('strong', { text: 'Confluence changes' });
-    const refreshBtn = header.createEl('button', { text: 'Refresh' });
+    const refreshBtn = header.createEl('button', { cls: 'cvs-icon-btn', title: 'Refresh' });
+    setIcon(refreshBtn, 'refresh-cw');
     refreshBtn.addEventListener('click', () => { void this.refresh(); });
 
     if (entries.length === 0) {
@@ -214,8 +215,26 @@ export class WritebackView extends ItemView {
     }
 
     const activeFilePath = this.app.workspace.getActiveFile()?.path ?? null;
+    const activeEntry = activeFilePath
+      ? entries.find((e) => e.path === activeFilePath) ?? null
+      : null;
 
-    // Group by space, active file floated to top of its group
+    // Current-file context bar
+    if (activeEntry) {
+      const rootFolder = this.plugin.settings.syncTargets.find(
+        (t) => t.spaceKey === activeEntry.spaceKey
+      )?.syncFolderPath ?? '';
+      const rel = rootFolder && activeEntry.path.startsWith(rootFolder + '/')
+        ? activeEntry.path.slice(rootFolder.length + 1)
+        : activeEntry.path;
+      const breadcrumb = rel.replace(/\.md$/, '').split('/').join(' › ');
+
+      const ctx = container.createDiv({ cls: 'cvs-context-bar' });
+      ctx.createSpan({ text: breadcrumb, cls: 'cvs-context-breadcrumb' });
+      this.renderRow(ctx, activeEntry, false, 0, true);
+    }
+
+    // Group by space
     const bySpace = new Map<string, PageEntry[]>();
     for (const entry of entries) {
       const group = bySpace.get(entry.spaceKey) ?? [];
@@ -224,68 +243,89 @@ export class WritebackView extends ItemView {
     }
 
     for (const [spaceKey, pages] of bySpace) {
-      // Sort: active file first, rest unchanged
-      const sorted = activeFilePath
-        ? [...pages].sort((a, b) => {
-            if (a.path === activeFilePath) return -1;
-            if (b.path === activeFilePath) return 1;
-            return 0;
-          })
-        : pages;
-
       const section = container.createDiv({ cls: 'cvs-space-section' });
       section.createEl('div', { cls: 'cvs-space-label', text: spaceKey });
 
-      for (const entry of sorted) {
-        this.renderRow(section, entry, entry.path === activeFilePath);
-      }
+      const rootFolder = this.plugin.settings.syncTargets.find(
+        (t) => t.spaceKey === spaceKey
+      )?.syncFolderPath ?? '';
+
+      const tree = buildFolderTree(pages, rootFolder);
+      this.renderFolderTree(section, tree, activeFilePath, 0);
     }
   }
 
-  private renderRow(container: HTMLElement, entry: PageEntry, isActive = false): void {
+  private renderFolderTree(
+    container: HTMLElement,
+    tree: FolderTree,
+    activeFilePath: string | null,
+    depth: number
+  ): void {
+    for (const entry of tree.pages) {
+      this.renderRow(container, entry, entry.path === activeFilePath, depth);
+    }
+    const sortedFolders = [...tree.subfolders.entries()].sort(([a], [b]) => a.localeCompare(b));
+    for (const [name, subtree] of sortedFolders) {
+      const folderRow = container.createDiv({ cls: 'cvs-folder-row' });
+      folderRow.style.paddingLeft = `${depth * 16 + 4}px`;
+      const iconEl = folderRow.createSpan({ cls: 'cvs-folder-icon' });
+      setIcon(iconEl, 'folder');
+      folderRow.createSpan({ text: name, cls: 'cvs-folder-name' });
+      this.renderFolderTree(container, subtree, activeFilePath, depth + 1);
+    }
+  }
+
+  private renderRow(container: HTMLElement, entry: PageEntry, isActive = false, depth = 0, compact = false): void {
     const row = container.createDiv({ cls: 'cvs-page-row' });
     if (isActive) row.addClass('cvs-page-row--active');
+    if (!compact) row.style.paddingLeft = `${depth * 16 + 4}px`;
 
     const left = row.createDiv({ cls: 'cvs-row-left' });
 
-    const { icon, dim } = stateDecoration(entry.state);
-    left.createSpan({ text: icon });
+    const { iconName, dim } = stateDecoration(entry.state);
+    const stateIcon = left.createSpan({ cls: 'cvs-state-icon' });
+    setIcon(stateIcon, iconName);
 
-    const titleEl = left.createSpan({ text: entry.title, cls: 'cvs-page-title' });
-    if (dim) titleEl.addClass('cvs-page-title--dim');
+    if (!compact) {
+      const titleEl = left.createSpan({ text: entry.title, cls: 'cvs-page-title' });
+      if (dim) titleEl.addClass('cvs-page-title--dim');
+    }
 
     const right = row.createDiv({ cls: 'cvs-row-right' });
 
     switch (entry.state.kind) {
       case 'locked':
-        this.addButton(right, 'Unlock', () => { void this.unlock(entry); });
+        this.addIconButton(right, 'lock-open', 'Unlock', () => { void this.unlock(entry); });
         break;
 
       case 'has-unsupported': {
-        const label = right.createSpan({ text: 'has unsupported content', cls: 'cvs-dim-label' });
+        const label = right.createSpan({ cls: 'cvs-dim-label' });
+        setIcon(label, 'image-off');
         label.title = 'Page contains embedded content (e.g. Lucid, Miro) that cannot be converted to Markdown and cannot be pushed back to Confluence';
         break;
       }
 
       case 'unlocked':
-        this.addButton(right, 'Relock', () => { void this.relock(entry); });
+        this.addIconButton(right, 'lock', 'Relock', () => { void this.relock(entry); });
         break;
 
       case 'modified':
-        this.addButton(right, 'Push', () => { void this.push(entry); });
-        this.addButton(right, 'Relock', () => { void this.relock(entry); });
+        this.addIconButton(right, 'upload-cloud', 'Push to Confluence', () => { void this.push(entry); });
+        this.addIconButton(right, 'lock', 'Relock', () => { void this.relock(entry); });
         break;
 
       case 'pushing': {
-        const spinner = right.createSpan({ text: '⬆️' });
+        const spinner = right.createSpan({ cls: 'cvs-state-icon' });
+        setIcon(spinner, 'loader');
         spinner.title = 'Pushing…';
         break;
       }
     }
   }
 
-  private addButton(container: HTMLElement, label: string, onClick: () => void): HTMLButtonElement {
-    const btn = container.createEl('button', { text: label, cls: 'cvs-action-btn' });
+  private addIconButton(container: HTMLElement, icon: string, tooltip: string, onClick: () => void): HTMLButtonElement {
+    const btn = container.createEl('button', { cls: 'cvs-icon-btn', title: tooltip });
+    setIcon(btn, icon);
     btn.addEventListener('click', onClick);
     return btn;
   }
@@ -561,18 +601,50 @@ class ConflictModal extends Modal {
 // Helpers
 // ---------------------------------------------------------------------------
 
-function stateDecoration(state: FileState): { icon: string; dim: boolean } {
+function stateDecoration(state: FileState): { iconName: string; dim: boolean } {
   switch (state.kind) {
-    case 'locked':          return { icon: '🔒', dim: false };
-    case 'has-unsupported': return { icon: '🖼️', dim: true };
-    case 'unlocked':        return { icon: '✏️', dim: false };
-    case 'modified':        return { icon: '✏️●', dim: false };
-    case 'pushing':         return { icon: '⬆️', dim: false };
+    case 'locked':          return { iconName: 'lock', dim: false };
+    case 'has-unsupported': return { iconName: 'image-off', dim: true };
+    case 'unlocked':        return { iconName: 'lock-open', dim: false };
+    case 'modified':        return { iconName: 'file-edit', dim: false };
+    case 'pushing':         return { iconName: 'loader', dim: false };
   }
 }
 
 function fmtDate(iso: string): string {
   return new Date(iso).toLocaleString();
+}
+
+// ---------------------------------------------------------------------------
+// Folder tree
+// ---------------------------------------------------------------------------
+
+interface FolderTree {
+  pages: PageEntry[];
+  subfolders: Map<string, FolderTree>;
+}
+
+function buildFolderTree(pages: PageEntry[], rootFolder: string): FolderTree {
+  const root: FolderTree = { pages: [], subfolders: new Map() };
+
+  for (const entry of pages) {
+    const rel = rootFolder && entry.path.startsWith(rootFolder + '/')
+      ? entry.path.slice(rootFolder.length + 1)
+      : entry.path;
+    const parts = rel.split('/');
+    const folderParts = parts.slice(0, -1);
+
+    let node = root;
+    for (const part of folderParts) {
+      if (!node.subfolders.has(part)) {
+        node.subfolders.set(part, { pages: [], subfolders: new Map() });
+      }
+      node = node.subfolders.get(part)!;
+    }
+    node.pages.push(entry);
+  }
+
+  return root;
 }
 
 /**

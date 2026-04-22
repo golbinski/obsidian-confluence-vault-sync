@@ -33,6 +33,31 @@
   margin-bottom: 12px;
 }
 
+/* Writeback view: current-file context bar */
+.cvs-context-bar {
+  background: var(--background-modifier-active-hover);
+  border-left: 2px solid var(--interactive-accent);
+  border-radius: 4px;
+  padding: 6px 8px 4px;
+  margin-bottom: 14px;
+}
+
+.cvs-context-breadcrumb {
+  display: block;
+  font-size: 0.75em;
+  opacity: 0.6;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  margin-bottom: 2px;
+}
+
+.cvs-context-bar .cvs-page-row {
+  padding: 0;
+  margin: 0;
+  background: transparent;
+}
+
 /* Writeback view: space section */
 .cvs-space-section {
   margin-bottom: 16px;
@@ -95,10 +120,41 @@
   font-size: 0.8em;
 }
 
-/* Writeback view: small action buttons */
-.cvs-action-btn {
-  padding: 2px 8px;
-  font-size: 0.8em;
+/* Writeback view: icon-only buttons (header refresh, row actions) */
+.cvs-icon-btn {
+  background: transparent;
+  border: none;
+  padding: 2px 4px;
+  cursor: pointer;
+  color: var(--icon-color);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  line-height: 1;
+}
+
+.cvs-icon-btn:hover {
+  color: var(--icon-color-hover);
+  background: var(--background-modifier-hover);
+}
+
+/* Writeback view: folder rows */
+.cvs-folder-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 3px 4px;
+  opacity: 0.65;
+  font-size: 0.85em;
+  font-weight: 600;
+}
+
+.cvs-folder-icon,
+.cvs-state-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
 }
 
 /* Conflict modal: button row */
