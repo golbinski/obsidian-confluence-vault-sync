@@ -98,6 +98,15 @@ describe('markdownToAdf', () => {
       expect(node.content?.[0].content?.[0].type).toBe('tableHeader');
       expect(node.content?.[1].content?.[0].type).toBe('tableCell');
     });
+
+    it('treats escaped \\| as a literal pipe inside a cell', () => {
+      const md = '| A | B |\n| --- | --- |\n| foo \\| bar | baz |';
+      const node = firstNode(md);
+      // Still two columns — escaped pipe is not a separator
+      expect(node.content?.[1].content).toHaveLength(2);
+      const cellText = node.content?.[1].content?.[0].content?.[0].content?.[0].text;
+      expect(cellText).toBe('foo | bar');
+    });
   });
 
   describe('inline marks', () => {

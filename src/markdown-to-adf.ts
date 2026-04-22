@@ -302,11 +302,12 @@ function parseTable(
   if (dataLines.length === 0) return null;
 
   const rows: AdfNode[] = dataLines.map((line, rowIndex) => {
+    // Split on unescaped pipes only, then unescape \| within each cell.
     const cells = line
       .replace(/^\|/, '')
       .replace(/\|$/, '')
-      .split('|')
-      .map((cell) => cell.trim());
+      .split(/(?<!\\)\|/)
+      .map((cell) => cell.trim().replace(/\\\|/g, '|'));
 
     const cellNodes: AdfNode[] = cells.map((cell) => ({
       type: rowIndex === 0 ? 'tableHeader' : 'tableCell',
