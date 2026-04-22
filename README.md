@@ -11,7 +11,10 @@ An [Obsidian](https://obsidian.md) plugin that syncs one or more Confluence Clou
 - **Image attachments** — downloads inline images below a configurable size limit into an `attachments/` folder.
 - **Read-only enforcement** — synced files are locked; Obsidian edits are reverted automatically until you explicitly unlock a file.
 - **Token encryption** — optionally encrypts the Confluence API token at rest using the OS keychain (macOS Keychain, Windows Credential Manager, Linux Secret Service), so it cannot be read from `data.json` by other apps or AI vault agents.
-- **Write-back (Confluence Changes pane)** — unlock a page, edit it locally, and push the Markdown back to Confluence as ADF. Uses three-way merge to preserve concurrent remote edits; conflicts are written as standard diff3 markers into the local file for manual resolution.
+- **Confluence Changes pane** — a sidebar panel mirroring the vault folder hierarchy, showing the status of every synced page. Unlock, edit, and push changes back to Confluence with three-way merge. Conflicts are written as standard diff3 markers for manual resolution.
+- **Publish new pages** — create a new `.md` file anywhere inside a sync folder and publish it to Confluence directly from the Changes pane. The plugin resolves the correct parent page from the folder structure, handles Confluence folder entities automatically, and writes the assigned page ID back into the file's frontmatter.
+- **Remote polling** — optionally poll Confluence on a configurable interval and display a pending-changes badge in the Changes pane when remote pages have been updated since the last sync.
+- **Semantic search** — optional Herbalist integration provides AI-powered semantic search across synced Confluence content directly from a sidebar panel.
 - **Manifest** — writes a `manifest.json` inside each sync folder describing the vault state: page tree, labels, vault paths, and Confluence URLs. Updated incrementally on granular pulls.
 - **Multiple sync targets** — map any number of Confluence spaces to separate vault folders.
 - **Parallel sync** — configurable concurrency for faster syncs on large spaces.
@@ -60,6 +63,8 @@ Open **Settings → Confluence Vault Sync** and fill in:
 | Encrypt API token | Encrypts the token at rest using the OS keychain. Recommended if you use AI agents that can read your vault. Toggling re-encrypts or decrypts automatically. |
 | Max image download size (KB) | Images at or below this size are saved locally (default: 500 KB) |
 | Sync concurrency | Pages fetched in parallel, 1–20 (default: 5) |
+| Enable polling | Periodically check Confluence for remote changes (off by default) |
+| Check interval | How often to poll: 5, 15, 30, or 60 minutes |
 
 Under **Sync Targets**, add one row per space:
 
@@ -83,17 +88,32 @@ Use **Test connection** to verify your credentials and confirm access to each co
 
 Synced files include YAML frontmatter with `confluence-id`, `confluence-url`, `confluence-title`, `space`, `last-synced`, and `read-only: true`.
 
-### Writing back to Confluence
+### Confluence Changes pane
 
-1. Open the **Confluence Changes** pane via the ribbon icon or the **Open Confluence Changes** command.
-2. Click **Unlock** next to a page to make it editable. The plugin saves a snapshot of the page body at this point to use as the merge base.
-3. Edit the file in Obsidian.
-4. Return to the pane and click **Push** to send your changes back to Confluence.
-   - The plugin performs a three-way merge between your edits, the snapshot taken at unlock time, and the current remote content. If the remote page has not changed, your edits are pushed as-is.
-   - If there are conflicting edits, standard diff3 conflict markers (`<<<<<<< local` / `=======` / `>>>>>>> confluence`) are written into the local file. Resolve the markers manually and click **Push** again.
-5. Click **Relock** to restore read-only protection without pushing.
+Open the pane via the ribbon icon (↑ cloud) or the **Open Confluence Changes** command. The pane has two sections:
 
-> **Note:** Pages that contain *unsupported* embedded content (Lucid, Miro, draw.io, and other custom macros without a linkable URL) are blocked from push. Inline images round-trip normally — new local images are uploaded as Confluence attachments on push.
+**CHANGES** — a flat list of all pages with local edits or new files not yet in Confluence, shown at the top for quick access. The currently active note appears first. Page names are colour-coded: green = locally modified, red = new (not yet published).
+
+**Space tree** — the full folder hierarchy for each configured space, collapsed by default. Folders auto-expand to reveal the active note. Click a folder to toggle it; use the expand/collapse icons next to the space name to open or close all folders at once.
+
+Each page row shows icon buttons on the right:
+
+| Icon | Action |
+|---|---|
+| 🔓 | Unlock — makes the file editable and saves a snapshot for three-way merge |
+| 🔒 | Relock — restores read-only protection. Shows a confirmation dialog if the file has unsaved changes |
+| ☁↑ | Push — sends local edits to Confluence via three-way merge. Conflict markers are written into the file if needed; resolve them and push again |
+| ☁+ | Publish — creates a new Confluence page from a locally created `.md` file |
+
+If polling is enabled and Confluence has pages updated since the last sync, a **N pending changes** badge appears at the top of the pane. Click it to trigger a sync.
+
+> **Note:** Pages with unsupported embedded content (Lucid, Miro, draw.io, and other custom macros without a URL) are marked *unsupported* and cannot be pushed. Inline images round-trip normally — new local images are uploaded as Confluence attachments on push.
+
+### Publishing new pages
+
+1. Create a new `.md` file anywhere inside a sync folder.
+2. Open the Changes pane — the file appears in red under **CHANGES** and in its folder in the tree.
+3. Click the ☁+ button to publish. The plugin walks up the folder hierarchy to find the correct Confluence parent page, handles Confluence folder entities transparently, creates the page, and writes `confluence-id` and related frontmatter back into the file.
 
 ## Known limitations
 
@@ -106,7 +126,7 @@ The ADF ↔ Markdown conversion is intentionally lossy for constructs Markdown c
 - **Confluence link anchors** — links to `#section` fragments on another page are rewritten to a plain wikilink; the anchor is dropped.
 - **Mentions and emoji** — rendered as `@Name` and `:shortName:` text respectively, without rebuilding the original ADF node on push.
 
-For any page containing unsupported content, the Confluence Changes pane shows a 🖼️ marker and disables the push action. Use Confluence directly to edit those pages.
+For any page containing unsupported content, the Confluence Changes pane shows an *unsupported* label and disables the push action. Use Confluence directly to edit those pages.
 
 ## How it works
 
