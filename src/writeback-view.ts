@@ -594,13 +594,12 @@ export class WritebackView extends ItemView {
         return;
       }
 
-      const { id: spaceId } = await client.getSpaceByKey(entry.spaceKey);
       const reverseIndex = await this.buildReversePageIndex(entry.spaceKey);
       const adf = markdownToAdf(body, reverseIndex, confluenceBaseUrl, new Map());
-      const { pageId, url } = await client.createPage(spaceId, parentInfo.pageId, entry.title, adf);
+      const { pageId, url } = await client.createPage(entry.spaceKey, parentInfo.pageId, entry.title, adf);
 
       // If the immediate parent is a Confluence folder entity, move the newly created page into it.
-      // The v2 createPage API does not accept folder IDs as parentId (CONFCLOUD-79677).
+      // The v1 createPage API also rejects folder IDs as ancestors (CONFCLOUD-79677).
       if (parentInfo.folderId) {
         await client.movePage(pageId, parentInfo.folderId);
       }

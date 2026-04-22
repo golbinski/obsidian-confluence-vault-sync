@@ -346,34 +346,42 @@ export class ConfluenceClient {
   }
 
   async createPage(
-    spaceId: string,
+    spaceKey: string,
     parentId: string,
     title: string,
     adf: AdfDocument,
   ): Promise<{ pageId: string; url: string }> {
-    console.debug(`${LOG} creating page "${title}" under parent ${parentId}`);
+    console.debug(`${LOG} creating page "${title}" under parent ${parentId} in space ${spaceKey}`);
+    // Use the v1 REST API for page creation — the v2 POST /pages endpoint returns
+    // 400 INVALID_MESSAGE when body.representation is "atlas_doc_format".
+    // v1 accepts atlas_doc_format via body.atlas_doc_format reliably.
     try {
       const res = await withRetry(`POST page "${title}"`, () =>
         requestUrl({
-          url: `${this.baseUrl}/wiki/api/v2/pages`,
+          url: `${this.baseUrl}/wiki/rest/api/content`,
           method: 'POST',
           headers: {
             Authorization: this.authHeader,
             'Content-Type': 'application/json',
           },
           body: JSON.stringify({
-            spaceId,
-            parentId,
+            type: 'page',
             status: 'current',
             title,
+            space: { key: spaceKey },
+            ancestors: [{ id: parentId }],
             body: {
-              representation: 'atlas_doc_format',
-              value: JSON.stringify(adf),
+              atlas_doc_format: {
+                value: JSON.stringify(adf),
+                representation: 'atlas_doc_format',
+              },
             },
           }),
         })
-      ) as { id: string; _links: { webui: string } };
-      return { pageId: res.id, url: `${this.baseUrl}/wiki${res._links.webui}` };
+      );
+      const json = res.json as { id: string; _links: { base: string; webui: string } };
+      const base = json._links.base ?? this.baseUrl;
+      return { pageId: json.id, url: `${base}${json._links.webui}` };
     } catch (err) {
       const status = (err as { status?: number }).status;
       throw new Error(`Failed to create page "${title}"${status ? ` (${status})` : ''}`);
