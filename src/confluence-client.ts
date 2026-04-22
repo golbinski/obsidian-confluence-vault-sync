@@ -345,6 +345,41 @@ export class ConfluenceClient {
     }
   }
 
+  async createPage(
+    spaceId: string,
+    parentId: string,
+    title: string,
+    adf: AdfDocument,
+  ): Promise<{ pageId: string; url: string }> {
+    console.debug(`${LOG} creating page "${title}" under parent ${parentId}`);
+    try {
+      const res = await withRetry(`POST page "${title}"`, () =>
+        requestUrl({
+          url: `${this.baseUrl}/wiki/api/v2/pages`,
+          method: 'POST',
+          headers: {
+            Authorization: this.authHeader,
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify({
+            spaceId,
+            parentId,
+            status: 'current',
+            title,
+            body: {
+              representation: 'atlas_doc_format',
+              value: JSON.stringify(adf),
+            },
+          }),
+        })
+      ) as { id: string; _links: { webui: string } };
+      return { pageId: res.id, url: `${this.baseUrl}/wiki${res._links.webui}` };
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      throw new Error(`Failed to create page "${title}"${status ? ` (${status})` : ''}`);
+    }
+  }
+
   /**
    * Upload a file as an attachment to a Confluence page.
    * Returns the media ID (UUID) and collection string needed to reference the

@@ -29,14 +29,15 @@ type FileState =
   | { kind: 'has-unsupported' }
   | { kind: 'unlocked' }
   | { kind: 'modified' }
-  | { kind: 'pushing' };
+  | { kind: 'pushing' }
+  | { kind: 'new' };       // locally created, not yet in Confluence
 
 interface PageEntry {
   path: string;
-  pageId: string;
+  pageId: string;          // empty string for 'new' entries
   title: string;
   spaceKey: string;
-  lastSynced: string;
+  lastSynced: string;      // empty string for 'new' entries
   state: FileState;
   attachments: ManifestAttachment[];
   hasUnsupportedContent: boolean;
@@ -45,7 +46,8 @@ interface PageEntry {
 export class WritebackView extends ItemView {
   private plugin: ConfluenceVaultSyncPlugin;
   private pushing = new Set<string>();
-  private collapsedFolders = new Set<string>();
+  private userExpanded = new Set<string>();  // user explicitly opened
+  private userCollapsed = new Set<string>(); // user explicitly closed
   private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: ConfluenceVaultSyncPlugin) {
@@ -125,7 +127,7 @@ export class WritebackView extends ItemView {
       const manifestPath = `${target.syncFolderPath}/manifest.json`;
       const manifest = await readManifestFile(this.app.vault, manifestPath);
       const manifestIndex = manifest ? buildManifestIndex(manifest) : new Map<string, ManifestPageNode>();
-      await this.scanDir(target.syncFolderPath, entries, manifestIndex);
+      await this.scanDir(target.syncFolderPath, entries, manifestIndex, target.spaceKey);
     }
 
     return entries;
@@ -134,7 +136,8 @@ export class WritebackView extends ItemView {
   private async scanDir(
     dir: string,
     entries: PageEntry[],
-    manifestIndex: Map<string, ManifestPageNode>
+    manifestIndex: Map<string, ManifestPageNode>,
+    targetSpaceKey: string,
   ): Promise<void> {
     let listed;
     try {
@@ -152,7 +155,21 @@ export class WritebackView extends ItemView {
         const spaceKey = extractFrontmatterField(content, 'space');
         const lastSynced = extractFrontmatterField(content, 'last-synced');
 
-        if (!pageId || !title || !spaceKey || !lastSynced) continue;
+        if (!pageId || !spaceKey || !lastSynced) {
+          // Untracked file — locally created, not yet in Confluence
+          const derivedTitle = filePath.split('/').pop()?.replace(/\.md$/, '') ?? filePath;
+          entries.push({
+            path: filePath,
+            pageId: '',
+            title: title ?? derivedTitle,
+            spaceKey: targetSpaceKey,
+            lastSynced: '',
+            state: { kind: 'new' },
+            attachments: [],
+            hasUnsupportedContent: false,
+          });
+          continue;
+        }
 
         const manifestNode = manifestIndex.get(pageId);
         const attachments = manifestNode?.attachments ?? [];
@@ -174,7 +191,7 @@ export class WritebackView extends ItemView {
     }
 
     for (const folder of listed.folders) {
-      await this.scanDir(folder, entries, manifestIndex);
+      await this.scanDir(folder, entries, manifestIndex, targetSpaceKey);
     }
   }
 
@@ -253,7 +270,6 @@ export class WritebackView extends ItemView {
 
     for (const [spaceKey, pages] of bySpace) {
       const section = container.createDiv({ cls: 'cvs-space-section' });
-      section.createEl('div', { cls: 'cvs-space-label', text: spaceKey });
 
       const rootFolder = this.plugin.settings.syncTargets.find(
         (t) => t.spaceKey === spaceKey
@@ -264,6 +280,33 @@ export class WritebackView extends ItemView {
         : new Set<string>();
 
       const tree = buildFolderTree(pages, rootFolder);
+
+      // Space label row with expand/collapse all buttons
+      const spaceHeader = section.createDiv({ cls: 'cvs-space-header' });
+      spaceHeader.createSpan({ cls: 'cvs-space-label', text: spaceKey });
+      const spaceActions = spaceHeader.createDiv({ cls: 'cvs-space-actions' });
+
+      const allKeys: string[] = [];
+      collectFolderKeys(tree, spaceKey, '', allKeys);
+
+      if (allKeys.length > 0) {
+        const expandBtn = spaceActions.createEl('button', { cls: 'cvs-icon-btn', title: 'Expand all' });
+        setIcon(expandBtn, 'chevrons-down-up');
+        expandBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          for (const k of allKeys) { this.userExpanded.add(k); this.userCollapsed.delete(k); }
+          void this.refresh();
+        });
+
+        const collapseBtn = spaceActions.createEl('button', { cls: 'cvs-icon-btn', title: 'Collapse all' });
+        setIcon(collapseBtn, 'chevrons-up-down');
+        collapseBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          for (const k of allKeys) { this.userExpanded.delete(k); this.userCollapsed.delete(k); }
+          void this.refresh();
+        });
+      }
+
       this.renderFolderTree(section, tree, activeFilePath, 0, spaceKey, '', autoExpand);
     }
   }
@@ -284,30 +327,33 @@ export class WritebackView extends ItemView {
     for (const [name, subtree] of sortedFolders) {
       const subPath = folderPath ? `${folderPath}/${name}` : name;
       const key = `${spaceKey}:${subPath}`;
-      const forcedOpen = autoExpand.has(subPath);
-      const collapsed = this.collapsedFolders.has(key) && !forcedOpen;
+      const pluginOpen = autoExpand.has(subPath);
+      // Plugin auto-expand always wins; otherwise user state; default is closed
+      const expanded = pluginOpen || (this.userExpanded.has(key) && !this.userCollapsed.has(key));
 
       const folderRow = container.createDiv({ cls: 'cvs-folder-row' });
       folderRow.style.paddingLeft = `${depth * 16 + 4}px`;
 
       const chevron = folderRow.createSpan({ cls: 'cvs-folder-chevron' });
-      setIcon(chevron, collapsed ? 'chevron-right' : 'chevron-down');
+      setIcon(chevron, expanded ? 'chevron-down' : 'chevron-right');
 
       const iconEl = folderRow.createSpan({ cls: 'cvs-folder-icon' });
-      setIcon(iconEl, collapsed ? 'folder' : 'folder-open');
+      setIcon(iconEl, expanded ? 'folder-open' : 'folder');
 
       folderRow.createSpan({ text: name, cls: 'cvs-folder-name' });
 
       folderRow.addEventListener('click', () => {
-        if (this.collapsedFolders.has(key)) {
-          this.collapsedFolders.delete(key);
+        if (expanded) {
+          this.userExpanded.delete(key);
+          this.userCollapsed.add(key);
         } else {
-          this.collapsedFolders.add(key);
+          this.userCollapsed.delete(key);
+          this.userExpanded.add(key);
         }
         void this.refresh();
       });
 
-      if (!collapsed) {
+      if (expanded) {
         this.renderFolderTree(container, subtree, activeFilePath, depth + 1, spaceKey, subPath, autoExpand);
       }
     }
@@ -320,9 +366,10 @@ export class WritebackView extends ItemView {
 
     if (!compact) {
       const left = row.createDiv({ cls: 'cvs-row-left' });
-      const dim = entry.state.kind === 'has-unsupported';
       const titleEl = left.createSpan({ text: entry.title, cls: 'cvs-page-title' });
-      if (dim) titleEl.addClass('cvs-page-title--dim');
+      if (entry.state.kind === 'has-unsupported') titleEl.addClass('cvs-page-title--dim');
+      if (entry.state.kind === 'new') titleEl.addClass('cvs-page-title--new');
+      if (entry.state.kind === 'modified') titleEl.addClass('cvs-page-title--modified');
     }
 
     const right = row.createDiv({ cls: 'cvs-row-right' });
@@ -353,6 +400,10 @@ export class WritebackView extends ItemView {
         spinner.title = 'Pushing…';
         break;
       }
+
+      case 'new':
+        this.addIconButton(right, 'cloud-upload', 'Publish to Confluence', () => { void this.publish(entry); });
+        break;
     }
   }
 
@@ -480,6 +531,78 @@ export class WritebackView extends ItemView {
       this.pushing.delete(entry.path);
       await this.refresh();
     }
+  }
+
+  private async publish(entry: PageEntry): Promise<void> {
+    const { confluenceBaseUrl, confluenceEmail, confluenceApiToken } = this.plugin.settings;
+    if (!confluenceBaseUrl || !confluenceEmail || !confluenceApiToken) {
+      new Notice('Confluence credentials not configured.');
+      return;
+    }
+
+    this.pushing.add(entry.path);
+    await this.refresh();
+
+    try {
+      const content = await this.app.vault.adapter.read(entry.path);
+      const body = stripFrontmatter(content);
+
+      const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
+
+      const parentId = await this.resolveParentPageId(entry.path, entry.spaceKey);
+      if (!parentId) {
+        new Notice(`Could not find a parent Confluence page for "${entry.title}". Make sure the containing folder has a synced page.`, 8000);
+        return;
+      }
+
+      const { id: spaceId } = await client.getSpaceByKey(entry.spaceKey);
+      const reverseIndex = await this.buildReversePageIndex(entry.spaceKey);
+      const adf = markdownToAdf(body, reverseIndex, confluenceBaseUrl, new Map());
+      const { pageId, url } = await client.createPage(spaceId, parentId, entry.title, adf);
+
+      // Write frontmatter into the file and make it read-only
+      const now = new Date().toISOString();
+      const frontmatter = `---\nconfluence-id: "${pageId}"\nconfluence-title: "${entry.title}"\nspace: "${entry.spaceKey}"\nlast-synced: "${now}"\n---\n`;
+      await this.app.vault.adapter.write(entry.path, frontmatter + body);
+      makeReadOnly(this.app.vault, entry.path);
+
+      new Notice(`"${entry.title}" published to Confluence.`);
+      console.debug(`[Confluence Vault Sync] published new page ${pageId} → ${url}`);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      new Notice(`Publish failed: ${msg}`, 8000);
+    } finally {
+      this.pushing.delete(entry.path);
+      await this.refresh();
+    }
+  }
+
+  /** Walk up folder by folder from the file's directory until we find an .md with a confluence-id. */
+  private async resolveParentPageId(filePath: string, spaceKey: string): Promise<string | null> {
+    const target = this.plugin.settings.syncTargets.find((t) => t.spaceKey === spaceKey);
+    if (!target) return null;
+
+    const root = target.syncFolderPath;
+    let dir = filePath.split('/').slice(0, -1).join('/');
+
+    while (dir.startsWith(root)) {
+      let listed;
+      try { listed = await this.app.vault.adapter.list(dir); } catch { break; }
+
+      for (const f of listed.files) {
+        if (!f.endsWith('.md')) continue;
+        try {
+          const c = await this.app.vault.adapter.read(f);
+          const id = extractFrontmatterField(c, 'confluence-id');
+          if (id) return id;
+        } catch { /* skip */ }
+      }
+
+      if (dir === root) break;
+      dir = dir.split('/').slice(0, -1).join('/');
+    }
+
+    return null;
   }
 
   private showRelockModal(title: string): Promise<boolean> {
@@ -708,6 +831,14 @@ function foldersContaining(filePath: string, rootFolder: string): Set<string> {
     result.add(parts.slice(0, i).join('/'));
   }
   return result;
+}
+
+function collectFolderKeys(tree: FolderTree, spaceKey: string, folderPath: string, result: string[]): void {
+  for (const [name, subtree] of tree.subfolders) {
+    const subPath = folderPath ? `${folderPath}/${name}` : name;
+    result.push(`${spaceKey}:${subPath}`);
+    collectFolderKeys(subtree, spaceKey, subPath, result);
+  }
 }
 
 function buildFolderTree(pages: PageEntry[], rootFolder: string): FolderTree {
