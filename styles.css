@@ -145,11 +145,20 @@
   align-items: center;
   gap: 4px;
   padding: 3px 4px;
+  border-radius: 4px;
   opacity: 0.65;
   font-size: 0.85em;
   font-weight: 600;
+  cursor: pointer;
+  user-select: none;
 }
 
+.cvs-folder-row:hover {
+  opacity: 1;
+  background: var(--background-modifier-hover);
+}
+
+.cvs-folder-chevron,
 .cvs-folder-icon,
 .cvs-state-icon {
   display: inline-flex;

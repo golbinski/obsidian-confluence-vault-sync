@@ -44,7 +44,9 @@ interface PageEntry {
 
 export class WritebackView extends ItemView {
   private plugin: ConfluenceVaultSyncPlugin;
-  private pushing = new Set<string>(); // paths currently being pushed
+  private pushing = new Set<string>();
+  private collapsedFolders = new Set<string>();
+  private refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(leaf: WorkspaceLeaf, plugin: ConfluenceVaultSyncPlugin) {
     super(leaf);
@@ -96,6 +98,13 @@ export class WritebackView extends ItemView {
   async onOpen(): Promise<void> {
     this.registerEvent(
       this.app.workspace.on('active-leaf-change', () => { void this.refresh(); })
+    );
+    this.registerEvent(
+      this.app.vault.on('modify', () => {
+        if (this.containerEl.offsetParent === null) return;
+        if (this.refreshTimer !== null) clearTimeout(this.refreshTimer);
+        this.refreshTimer = setTimeout(() => { void this.refresh(); }, 500);
+      })
     );
     await this.refresh();
   }
@@ -250,8 +259,12 @@ export class WritebackView extends ItemView {
         (t) => t.spaceKey === spaceKey
       )?.syncFolderPath ?? '';
 
+      const autoExpand = activeFilePath
+        ? foldersContaining(activeFilePath, rootFolder)
+        : new Set<string>();
+
       const tree = buildFolderTree(pages, rootFolder);
-      this.renderFolderTree(section, tree, activeFilePath, 0);
+      this.renderFolderTree(section, tree, activeFilePath, 0, spaceKey, '', autoExpand);
     }
   }
 
@@ -259,19 +272,44 @@ export class WritebackView extends ItemView {
     container: HTMLElement,
     tree: FolderTree,
     activeFilePath: string | null,
-    depth: number
+    depth: number,
+    spaceKey: string,
+    folderPath: string,
+    autoExpand: Set<string>,
   ): void {
     for (const entry of tree.pages) {
       this.renderRow(container, entry, entry.path === activeFilePath, depth);
     }
     const sortedFolders = [...tree.subfolders.entries()].sort(([a], [b]) => a.localeCompare(b));
     for (const [name, subtree] of sortedFolders) {
+      const subPath = folderPath ? `${folderPath}/${name}` : name;
+      const key = `${spaceKey}:${subPath}`;
+      const forcedOpen = autoExpand.has(subPath);
+      const collapsed = this.collapsedFolders.has(key) && !forcedOpen;
+
       const folderRow = container.createDiv({ cls: 'cvs-folder-row' });
       folderRow.style.paddingLeft = `${depth * 16 + 4}px`;
+
+      const chevron = folderRow.createSpan({ cls: 'cvs-folder-chevron' });
+      setIcon(chevron, collapsed ? 'chevron-right' : 'chevron-down');
+
       const iconEl = folderRow.createSpan({ cls: 'cvs-folder-icon' });
-      setIcon(iconEl, 'folder');
+      setIcon(iconEl, collapsed ? 'folder' : 'folder-open');
+
       folderRow.createSpan({ text: name, cls: 'cvs-folder-name' });
-      this.renderFolderTree(container, subtree, activeFilePath, depth + 1);
+
+      folderRow.addEventListener('click', () => {
+        if (this.collapsedFolders.has(key)) {
+          this.collapsedFolders.delete(key);
+        } else {
+          this.collapsedFolders.add(key);
+        }
+        void this.refresh();
+      });
+
+      if (!collapsed) {
+        this.renderFolderTree(container, subtree, activeFilePath, depth + 1, spaceKey, subPath, autoExpand);
+      }
     }
   }
 
@@ -280,13 +318,9 @@ export class WritebackView extends ItemView {
     if (isActive) row.addClass('cvs-page-row--active');
     if (!compact) row.style.paddingLeft = `${depth * 16 + 4}px`;
 
-    const left = row.createDiv({ cls: 'cvs-row-left' });
-
-    const { iconName, dim } = stateDecoration(entry.state);
-    const stateIcon = left.createSpan({ cls: 'cvs-state-icon' });
-    setIcon(stateIcon, iconName);
-
     if (!compact) {
+      const left = row.createDiv({ cls: 'cvs-row-left' });
+      const dim = entry.state.kind === 'has-unsupported';
       const titleEl = left.createSpan({ text: entry.title, cls: 'cvs-page-title' });
       if (dim) titleEl.addClass('cvs-page-title--dim');
     }
@@ -299,8 +333,7 @@ export class WritebackView extends ItemView {
         break;
 
       case 'has-unsupported': {
-        const label = right.createSpan({ cls: 'cvs-dim-label' });
-        setIcon(label, 'image-off');
+        const label = right.createSpan({ text: 'unsupported', cls: 'cvs-dim-label' });
         label.title = 'Page contains embedded content (e.g. Lucid, Miro) that cannot be converted to Markdown and cannot be pushed back to Confluence';
         break;
       }
@@ -342,6 +375,15 @@ export class WritebackView extends ItemView {
   }
 
   private async relock(entry: PageEntry): Promise<void> {
+    const stat = await this.app.vault.adapter.stat(entry.path);
+    const mtime = stat?.mtime ?? 0;
+    const hasChanges = mtime > new Date(entry.lastSynced).getTime();
+
+    if (hasChanges) {
+      const proceed = await this.showRelockModal(entry.title);
+      if (!proceed) return;
+    }
+
     makeReadOnly(this.app.vault, entry.path);
     await this.deleteBase(entry.pageId);
     await this.refresh();
@@ -438,6 +480,12 @@ export class WritebackView extends ItemView {
       this.pushing.delete(entry.path);
       await this.refresh();
     }
+  }
+
+  private showRelockModal(title: string): Promise<boolean> {
+    return new Promise((resolve) => {
+      new RelockModal(this.app, title, resolve).open();
+    });
   }
 
   private showConflictModal(
@@ -598,18 +646,44 @@ class ConflictModal extends Modal {
 }
 
 // ---------------------------------------------------------------------------
-// Helpers
+// Relock confirmation modal
 // ---------------------------------------------------------------------------
 
-function stateDecoration(state: FileState): { iconName: string; dim: boolean } {
-  switch (state.kind) {
-    case 'locked':          return { iconName: 'lock', dim: false };
-    case 'has-unsupported': return { iconName: 'image-off', dim: true };
-    case 'unlocked':        return { iconName: 'lock-open', dim: false };
-    case 'modified':        return { iconName: 'file-edit', dim: false };
-    case 'pushing':         return { iconName: 'loader', dim: false };
+class RelockModal extends Modal {
+  private title: string;
+  private resolve: (proceed: boolean) => void;
+
+  constructor(app: import('obsidian').App, title: string, resolve: (proceed: boolean) => void) {
+    super(app);
+    this.title = title;
+    this.resolve = resolve;
+  }
+
+  onOpen(): void {
+    const { contentEl } = this;
+    contentEl.createEl('h3', { text: 'Discard changes?' });
+    contentEl.createEl('p', {
+      text: `"${this.title}" has unsaved edits. Relocking will discard them and restore the last synced version.`,
+    });
+
+    const btnRow = contentEl.createDiv({ cls: 'cvs-modal-btn-row' });
+
+    const cancelBtn = btnRow.createEl('button', { text: 'Cancel' });
+    cancelBtn.addEventListener('click', () => { this.resolve(false); this.close(); });
+
+    const confirmBtn = btnRow.createEl('button', { text: 'Discard & relock', cls: 'cvs-danger-btn' });
+    confirmBtn.addEventListener('click', () => { this.resolve(true); this.close(); });
+  }
+
+  onClose(): void {
+    this.resolve(false);
+    this.contentEl.empty();
   }
 }
+
+// ---------------------------------------------------------------------------
+// Helpers
+// ---------------------------------------------------------------------------
 
 function fmtDate(iso: string): string {
   return new Date(iso).toLocaleString();
@@ -622,6 +696,18 @@ function fmtDate(iso: string): string {
 interface FolderTree {
   pages: PageEntry[];
   subfolders: Map<string, FolderTree>;
+}
+
+function foldersContaining(filePath: string, rootFolder: string): Set<string> {
+  const rel = rootFolder && filePath.startsWith(rootFolder + '/')
+    ? filePath.slice(rootFolder.length + 1)
+    : filePath;
+  const parts = rel.split('/').slice(0, -1);
+  const result = new Set<string>();
+  for (let i = 1; i <= parts.length; i++) {
+    result.add(parts.slice(0, i).join('/'));
+  }
+  return result;
 }
 
 function buildFolderTree(pages: PageEntry[], rootFolder: string): FolderTree {
