@@ -241,23 +241,27 @@ export class WritebackView extends ItemView {
     }
 
     const activeFilePath = this.app.workspace.getActiveFile()?.path ?? null;
-    const activeEntry = activeFilePath
-      ? entries.find((e) => e.path === activeFilePath) ?? null
-      : null;
 
-    // Current-file context bar
-    if (activeEntry) {
-      const rootFolder = this.plugin.settings.syncTargets.find(
-        (t) => t.spaceKey === activeEntry.spaceKey
-      )?.syncFolderPath ?? '';
-      const rel = rootFolder && activeEntry.path.startsWith(rootFolder + '/')
-        ? activeEntry.path.slice(rootFolder.length + 1)
-        : activeEntry.path;
-      const breadcrumb = rel.replace(/\.md$/, '').split('/').join(' › ');
+    // Changes section — all modified/new files, active first
+    const changed = entries.filter(
+      (e) => e.state.kind === 'modified' || e.state.kind === 'new'
+    );
+    if (changed.length > 0) {
+      const sorted = activeFilePath
+        ? [...changed].sort((a, b) => {
+            if (a.path === activeFilePath) return -1;
+            if (b.path === activeFilePath) return 1;
+            return 0;
+          })
+        : changed;
 
-      const ctx = container.createDiv({ cls: 'cvs-context-bar' });
-      ctx.createSpan({ text: breadcrumb, cls: 'cvs-context-breadcrumb' });
-      this.renderRow(ctx, activeEntry, false, 0, true);
+      const changesSection = container.createDiv({ cls: 'cvs-space-section' });
+      changesSection.createDiv({ cls: 'cvs-space-header' })
+        .createSpan({ cls: 'cvs-space-label', text: 'changes' });
+
+      for (const entry of sorted) {
+        this.renderChangesRow(changesSection, entry, entry.path === activeFilePath);
+      }
     }
 
     // Group by space
@@ -332,7 +336,7 @@ export class WritebackView extends ItemView {
       const expanded = pluginOpen || (this.userExpanded.has(key) && !this.userCollapsed.has(key));
 
       const folderRow = container.createDiv({ cls: 'cvs-folder-row' });
-      folderRow.style.paddingLeft = `${depth * 16 + 4}px`;
+      addGuides(folderRow, depth);
 
       const chevron = folderRow.createSpan({ cls: 'cvs-folder-chevron' });
       setIcon(chevron, expanded ? 'chevron-down' : 'chevron-right');
@@ -362,7 +366,7 @@ export class WritebackView extends ItemView {
   private renderRow(container: HTMLElement, entry: PageEntry, isActive = false, depth = 0, compact = false): void {
     const row = container.createDiv({ cls: 'cvs-page-row' });
     if (isActive) row.addClass('cvs-page-row--active');
-    if (!compact) row.style.paddingLeft = `${depth * 16 + 4}px`;
+    if (!compact) addGuides(row, depth);
 
     if (!compact) {
       const left = row.createDiv({ cls: 'cvs-row-left' });
@@ -390,8 +394,8 @@ export class WritebackView extends ItemView {
         break;
 
       case 'modified':
-        this.addIconButton(right, 'upload-cloud', 'Push to Confluence', () => { void this.push(entry); });
-        this.addIconButton(right, 'lock', 'Relock', () => { void this.relock(entry); });
+      case 'new':
+        this.addStateButtons(right, entry);
         break;
 
       case 'pushing': {
@@ -400,9 +404,37 @@ export class WritebackView extends ItemView {
         spinner.title = 'Pushing…';
         break;
       }
+    }
+  }
 
+  private renderChangesRow(container: HTMLElement, entry: PageEntry, isActive: boolean): void {
+    const rootFolder = this.plugin.settings.syncTargets.find(
+      (t) => t.spaceKey === entry.spaceKey
+    )?.syncFolderPath ?? '';
+    const rel = rootFolder && entry.path.startsWith(rootFolder + '/')
+      ? entry.path.slice(rootFolder.length + 1)
+      : entry.path;
+    const breadcrumb = rel.replace(/\.md$/, '').split('/').join(' › ');
+
+    const row = container.createDiv({ cls: 'cvs-changes-row' });
+    if (isActive) row.addClass('cvs-changes-row--active');
+
+    const label = row.createSpan({ text: breadcrumb, cls: 'cvs-changes-breadcrumb' });
+    if (entry.state.kind === 'new') label.addClass('cvs-changes-breadcrumb--new');
+    if (entry.state.kind === 'modified') label.addClass('cvs-changes-breadcrumb--modified');
+
+    const right = row.createDiv({ cls: 'cvs-row-right' });
+    this.addStateButtons(right, entry);
+  }
+
+  private addStateButtons(container: HTMLElement, entry: PageEntry): void {
+    switch (entry.state.kind) {
+      case 'modified':
+        this.addIconButton(container, 'upload-cloud', 'Push to Confluence', () => { void this.push(entry); });
+        this.addIconButton(container, 'lock', 'Relock', () => { void this.relock(entry); });
+        break;
       case 'new':
-        this.addIconButton(right, 'cloud-upload', 'Publish to Confluence', () => { void this.publish(entry); });
+        this.addIconButton(container, 'cloud-upload', 'Publish to Confluence', () => { void this.publish(entry); });
         break;
     }
   }
@@ -819,6 +851,10 @@ function fmtDate(iso: string): string {
 interface FolderTree {
   pages: PageEntry[];
   subfolders: Map<string, FolderTree>;
+}
+
+function addGuides(el: HTMLElement, depth: number): void {
+  for (let i = 0; i < depth; i++) el.createSpan({ cls: 'cvs-indent-guide' });
 }
 
 function foldersContaining(filePath: string, rootFolder: string): Set<string> {

@@ -33,29 +33,36 @@
   margin-bottom: 12px;
 }
 
-/* Writeback view: current-file context bar */
-.cvs-context-bar {
-  background: var(--background-modifier-active-hover);
-  border-left: 2px solid var(--interactive-accent);
+/* Writeback view: changes section rows */
+.cvs-changes-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 2px 4px;
   border-radius: 4px;
-  padding: 6px 8px 4px;
-  margin-bottom: 14px;
+  margin-bottom: 1px;
+  font-size: 0.85em;
 }
 
-.cvs-context-breadcrumb {
-  display: block;
-  font-size: 0.75em;
-  opacity: 0.6;
-  white-space: nowrap;
+.cvs-changes-row--active {
+  background-color: var(--background-modifier-active-hover);
+  border-left: 2px solid var(--interactive-accent);
+}
+
+.cvs-changes-breadcrumb {
   overflow: hidden;
   text-overflow: ellipsis;
-  margin-bottom: 2px;
+  white-space: nowrap;
+  flex: 1;
+  min-width: 0;
 }
 
-.cvs-context-bar .cvs-page-row {
-  padding: 0;
-  margin: 0;
-  background: transparent;
+.cvs-changes-breadcrumb--new {
+  color: var(--color-red);
+}
+
+.cvs-changes-breadcrumb--modified {
+  color: var(--color-green);
 }
 
 /* Writeback view: space section */
@@ -89,23 +96,24 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 5px 4px;
+  padding: 2px 4px 2px 0;
   border-radius: 4px;
-  margin-bottom: 2px;
+  margin-bottom: 1px;
+  font-size: 0.85em;
 }
 
 .cvs-page-row--active {
   background-color: var(--background-modifier-active-hover);
   border-left: 2px solid var(--interactive-accent);
-  padding-left: 6px;
 }
 
 /* Writeback view: left side of page row */
 .cvs-row-left {
   display: flex;
   align-items: center;
-  gap: 6px;
+  gap: 4px;
   overflow: hidden;
+  padding-left: 4px;
 }
 
 /* Writeback view: page title */
@@ -113,6 +121,25 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+/* Writeback view: indent guide lines */
+.cvs-indent-guide {
+  display: inline-flex;
+  width: 16px;
+  flex-shrink: 0;
+  align-self: stretch;
+  position: relative;
+}
+
+.cvs-indent-guide::after {
+  content: '';
+  position: absolute;
+  left: 8px;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  background: var(--background-modifier-border);
 }
 
 .cvs-page-title--dim {
@@ -164,11 +191,12 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 3px 4px;
+  padding: 2px 4px 2px 0;
   border-radius: 4px;
-  opacity: 0.65;
+  margin-bottom: 1px;
   font-size: 0.85em;
-  font-weight: 600;
+  font-weight: 500;
+  opacity: 0.7;
   cursor: pointer;
   user-select: none;
 }
