@@ -1,6 +1,6 @@
 {
   "name": "obsidian-confluence-vault-sync",
-  "version": "0.8.6",
+  "version": "0.8.8",
   "description": "Sync a Confluence Cloud space into a read-only vault folder.",
   "main": "main.js",
   "scripts": {
