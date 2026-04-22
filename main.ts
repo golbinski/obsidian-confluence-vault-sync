@@ -138,23 +138,6 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     this.registerEvent(this.app.workspace.on('active-leaf-change', enforceReadingMode));
     this.registerEvent(this.app.workspace.on('layout-change', enforceReadingMode));
 
-    // Fallback content-revert in case a modification slips through (e.g. from
-    // another plugin or a macro), without showing a disruptive notice.
-    this.registerEvent(
-      this.app.vault.on('modify', (file) => {
-        const isManaged = this.settings.syncTargets.some((t) =>
-          file.path.startsWith(t.syncFolderPath + '/')
-        );
-        if (!isManaged) return;
-        if (isWritable(this.app.vault, file.path)) return;
-
-        this.app.vault.adapter
-          .read(file.path)
-          .then((content) => this.app.vault.adapter.write(file.path, content))
-          .catch(() => { /* ignore */ });
-      })
-    );
-
     this.startPolling();
   }
 
