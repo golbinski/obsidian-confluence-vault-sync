@@ -355,6 +355,19 @@ export class ConfluenceClient {
     // Use the v1 REST API for page creation — the v2 POST /pages endpoint returns
     // 400 INVALID_MESSAGE when body.representation is "atlas_doc_format".
     // v1 accepts atlas_doc_format via body.atlas_doc_format reliably.
+    const requestBody = {
+      type: 'page',
+      status: 'current',
+      title,
+      space: { key: spaceKey },
+      ancestors: [{ id: parentId }],
+      body: {
+        atlas_doc_format: {
+          value: JSON.stringify(adf),
+          representation: 'atlas_doc_format',
+        },
+      },
+    };
     try {
       const res = await withRetry(`POST page "${title}"`, () =>
         requestUrl({
@@ -364,26 +377,21 @@ export class ConfluenceClient {
             Authorization: this.authHeader,
             'Content-Type': 'application/json',
           },
-          body: JSON.stringify({
-            type: 'page',
-            status: 'current',
-            title,
-            space: { key: spaceKey },
-            ancestors: [{ id: parentId }],
-            body: {
-              atlas_doc_format: {
-                value: JSON.stringify(adf),
-                representation: 'atlas_doc_format',
-              },
-            },
-          }),
+          body: JSON.stringify(requestBody),
         })
       );
       const json = res.json as { id: string; _links: { base: string; webui: string } };
+      console.debug(`${LOG} created page ${json.id} "${title}"`);
       const base = json._links.base ?? this.baseUrl;
       return { pageId: json.id, url: `${base}${json._links.webui}` };
     } catch (err) {
       const status = (err as { status?: number }).status;
+      const responseText = (err as { responseText?: string }).responseText ?? '';
+      console.error(
+        `${LOG} createPage failed — status=${status ?? 'unknown'} space=${spaceKey} parentId=${parentId} title="${title}"`,
+        responseText ? `\nConfluence response: ${responseText}` : '',
+        '\nRequest body:', JSON.stringify(requestBody, null, 2),
+      );
       throw new Error(`Failed to create page "${title}"${status ? ` (${status})` : ''}`);
     }
   }
