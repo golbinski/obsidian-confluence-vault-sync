@@ -175,7 +175,7 @@ export class WritebackView extends ItemView {
         const attachments = manifestNode?.attachments ?? [];
         const hasUnsupportedContent = manifestNode?.hasUnsupportedContent ?? false;
 
-        const state = await this.computeState(filePath, lastSynced, hasUnsupportedContent);
+        const state = await this.computeState(filePath, lastSynced, hasUnsupportedContent, pageId);
 
         entries.push({
           path: filePath,
@@ -198,7 +198,8 @@ export class WritebackView extends ItemView {
   private async computeState(
     filePath: string,
     lastSynced: string,
-    hasUnsupportedContent: boolean
+    hasUnsupportedContent: boolean,
+    pageId: string,
   ): Promise<FileState> {
     if (this.pushing.has(filePath)) return { kind: 'pushing' };
 
@@ -209,7 +210,17 @@ export class WritebackView extends ItemView {
       return { kind: 'locked' };
     }
 
-    // File is writable — check mtime
+    // File is writable — compare content against the saved base snapshot.
+    // mtime is unreliable here because last-synced is stamped before the file
+    // write, so mtime is always slightly after last-synced even on unedited files.
+    const base = await this.loadBase(pageId);
+    if (base !== null) {
+      const content = await this.app.vault.adapter.read(filePath);
+      const current = stripFrontmatter(content);
+      return current !== base ? { kind: 'modified' } : { kind: 'unlocked' };
+    }
+
+    // No base snapshot — fall back to mtime comparison.
     const stat = await this.app.vault.adapter.stat(filePath);
     const mtime = stat?.mtime ?? 0;
     const syncedTime = new Date(lastSynced).getTime();
