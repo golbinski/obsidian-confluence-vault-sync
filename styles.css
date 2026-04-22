@@ -65,6 +65,39 @@
   color: var(--color-green);
 }
 
+/* Writeback view: pending remote changes badge */
+.cvs-pending-badge {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  margin-bottom: 14px;
+  border-radius: 4px;
+  background: var(--background-modifier-active-hover);
+  border: 1px solid var(--background-modifier-border);
+  font-size: 0.8em;
+  font-weight: 600;
+  cursor: pointer;
+  color: var(--text-muted);
+}
+
+.cvs-pending-badge:hover {
+  background: var(--background-modifier-hover);
+  color: var(--text-normal);
+}
+
+.cvs-pending-badge-icon {
+  display: inline-flex;
+  align-items: center;
+  flex-shrink: 0;
+  color: var(--interactive-accent);
+}
+
+.cvs-pending-badge-text {
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
 /* Writeback view: space section */
 .cvs-space-section {
   margin-bottom: 16px;

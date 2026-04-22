@@ -381,6 +381,27 @@ export class ConfluenceClient {
   }
 
   /**
+   * Move a page to be a child of targetId using the v1 API.
+   * Required when targetId is a Confluence folder entity — the v2 createPage
+   * endpoint rejects folder IDs as parentId (returns 500, CONFCLOUD-79677).
+   */
+  async movePage(pageId: string, targetId: string): Promise<void> {
+    console.debug(`${LOG} moving page ${pageId} → under ${targetId}`);
+    try {
+      await withRetry(`move page ${pageId}`, () =>
+        requestUrl({
+          url: `${this.baseUrl}/wiki/rest/api/content/${pageId}/move/append/${targetId}`,
+          method: 'PUT',
+          headers: { Authorization: this.authHeader },
+        })
+      );
+    } catch (err) {
+      const status = (err as { status?: number }).status;
+      throw new Error(`Failed to move page ${pageId} under ${targetId}${status ? ` (${status})` : ''}`);
+    }
+  }
+
+  /**
    * Upload a file as an attachment to a Confluence page.
    * Returns the media ID (UUID) and collection string needed to reference the
    * attachment in an ADF media node.

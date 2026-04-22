@@ -232,6 +232,18 @@ export class WritebackView extends ItemView {
     setIcon(refreshBtn, 'refresh-cw');
     refreshBtn.addEventListener('click', () => { void this.refresh(); });
 
+    const pending = this.plugin.pendingRemoteChanges;
+    if (pending > 0) {
+      const badge = container.createDiv({ cls: 'cvs-pending-badge' });
+      const iconEl = badge.createSpan({ cls: 'cvs-pending-badge-icon' });
+      setIcon(iconEl, 'cloud-download');
+      badge.createSpan({
+        text: `${pending} pending ${pending === 1 ? 'change' : 'changes'} in Confluence`,
+        cls: 'cvs-pending-badge-text',
+      });
+      badge.addEventListener('click', () => { void this.plugin.syncAll(); });
+    }
+
     if (entries.length === 0) {
       container.createEl('p', {
         text: 'No synced pages found. Run a sync first.',
@@ -576,8 +588,8 @@ export class WritebackView extends ItemView {
 
       const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
 
-      const parentId = await this.resolveParentPageId(entry.path, entry.spaceKey);
-      if (!parentId) {
+      const parentInfo = await this.resolveParentInfo(entry.path, entry.spaceKey);
+      if (!parentInfo) {
         new Notice(`Could not find a parent Confluence page for "${entry.title}". Make sure the containing folder has a synced page.`, 8000);
         return;
       }
@@ -585,7 +597,13 @@ export class WritebackView extends ItemView {
       const { id: spaceId } = await client.getSpaceByKey(entry.spaceKey);
       const reverseIndex = await this.buildReversePageIndex(entry.spaceKey);
       const adf = markdownToAdf(body, reverseIndex, confluenceBaseUrl, new Map());
-      const { pageId, url } = await client.createPage(spaceId, parentId, entry.title, adf);
+      const { pageId, url } = await client.createPage(spaceId, parentInfo.pageId, entry.title, adf);
+
+      // If the immediate parent is a Confluence folder entity, move the newly created page into it.
+      // The v2 createPage API does not accept folder IDs as parentId (CONFCLOUD-79677).
+      if (parentInfo.folderId) {
+        await client.movePage(pageId, parentInfo.folderId);
+      }
 
       // Write frontmatter into the file and make it read-only
       const now = new Date().toISOString();
@@ -604,27 +622,51 @@ export class WritebackView extends ItemView {
     }
   }
 
-  /** Walk up folder by folder from the file's directory until we find an .md with a confluence-id. */
-  private async resolveParentPageId(filePath: string, spaceKey: string): Promise<string | null> {
+  /**
+   * Walk up from the new file's directory to find the nearest Confluence page ancestor.
+   * Returns the page ID to use as parentId for createPage, plus an optional folderId
+   * if the immediate parent directory is a Confluence folder entity (not a page).
+   * In the folder case the caller must move the new page into the folder after creation,
+   * because the v2 createPage API rejects folder IDs as parentId (CONFCLOUD-79677).
+   */
+  private async resolveParentInfo(
+    filePath: string,
+    spaceKey: string,
+  ): Promise<{ pageId: string; folderId: string | null } | null> {
     const target = this.plugin.settings.syncTargets.find((t) => t.spaceKey === spaceKey);
     if (!target) return null;
 
     const root = target.syncFolderPath;
+
+    // Build vaultPath → manifest node ID map so we can identify folder entities
+    const manifest = await readManifestFile(this.app.vault, `${root}/manifest.json`);
+    const manifestIndex = manifest ? buildManifestIndex(manifest) : new Map();
+    const vaultPathToId = new Map<string, string>();
+    for (const [id, node] of manifestIndex) vaultPathToId.set(node.vaultPath, id);
+
     let dir = filePath.split('/').slice(0, -1).join('/');
+    let folderId: string | null = null;
+    let isFirstDir = true;
 
     while (dir.startsWith(root)) {
-      let listed;
-      try { listed = await this.app.vault.adapter.list(dir); } catch { break; }
+      // In Confluence's synced path convention, the page whose children live in `dir/`
+      // is stored at `dir/<dirname>.md` — look for that file specifically.
+      const dirName = dir.split('/').pop() ?? '';
+      const candidate = `${dir}/${dirName}.md`;
 
-      for (const f of listed.files) {
-        if (!f.endsWith('.md')) continue;
-        try {
-          const c = await this.app.vault.adapter.read(f);
-          const id = extractFrontmatterField(c, 'confluence-id');
-          if (id) return id;
-        } catch { /* skip */ }
+      try {
+        const content = await this.app.vault.adapter.read(candidate);
+        const id = extractFrontmatterField(content, 'confluence-id');
+        if (id) return { pageId: id, folderId };
+      } catch { /* file doesn't exist — this dir may be a folder entity */ }
+
+      // If the immediate parent has no .md file, check if it's a known folder in the manifest
+      if (isFirstDir) {
+        const manifestId = vaultPathToId.get(candidate);
+        if (manifestId) folderId = manifestId;
       }
 
+      isFirstDir = false;
       if (dir === root) break;
       dir = dir.split('/').slice(0, -1).join('/');
     }

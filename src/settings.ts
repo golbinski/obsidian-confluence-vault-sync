@@ -15,6 +15,8 @@ export interface ConfluenceVaultSyncSettings {
   herbalistBinaryPath: string;
   herbalistIndexScope: 'vault' | 'confluence';
   herbalistModel: string;
+  pollingEnabled: boolean;
+  pollingIntervalMinutes: number;
 }
 
 export const DEFAULT_SETTINGS: ConfluenceVaultSyncSettings = {
@@ -29,4 +31,6 @@ export const DEFAULT_SETTINGS: ConfluenceVaultSyncSettings = {
   herbalistBinaryPath: '',
   herbalistIndexScope: 'confluence',
   herbalistModel: 'bge-small-en-v1.5',
+  pollingEnabled: false,
+  pollingIntervalMinutes: 15,
 };

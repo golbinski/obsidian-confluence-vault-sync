@@ -16,7 +16,7 @@ import {
   type SyncTarget,
 } from './src/settings';
 import { encryptToken, decryptToken, isEncryptionAvailable } from './src/token-crypto';
-import { runSyncForTarget, runPagePull, type PullScope } from './src/sync-engine';
+import { runSyncForTarget, runPagePull, readManifestFile, buildManifestIndex, type PullScope } from './src/sync-engine';
 import { WritebackView, WRITEBACK_VIEW_TYPE } from './src/writeback-view';
 import { HerbalistView, HERBALIST_VIEW_TYPE } from './src/herbalist-view';
 import { detectHerbalistBinary, runHerbalistIndex } from './src/herbalist';
@@ -37,8 +37,10 @@ function findOwningTarget(filePath: string, syncTargets: SyncTarget[]): SyncTarg
 
 export default class ConfluenceVaultSyncPlugin extends Plugin {
   settings!: ConfluenceVaultSyncSettings;
+  pendingRemoteChanges = 0;
   private statusBarEl!: HTMLElement;
   private syncInProgress = false;
+  private pollTimer: ReturnType<typeof setInterval> | null = null;
 
   async onload(): Promise<void> {
     await this.loadSettings();
@@ -152,6 +154,62 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
           .catch(() => { /* ignore */ });
       })
     );
+
+    this.startPolling();
+  }
+
+  startPolling(): void {
+    if (this.pollTimer !== null) {
+      clearInterval(this.pollTimer);
+      this.pollTimer = null;
+    }
+    if (!this.settings.pollingEnabled) return;
+    const ms = this.settings.pollingIntervalMinutes * 60 * 1000;
+    void this.pollRemoteChanges();
+    this.pollTimer = setInterval(() => { void this.pollRemoteChanges(); }, ms);
+  }
+
+  private async pollRemoteChanges(): Promise<void> {
+    const { confluenceBaseUrl, confluenceEmail, confluenceApiToken } = this.settings;
+    if (!confluenceBaseUrl || !confluenceEmail || !confluenceApiToken) return;
+
+    const { ConfluenceClient } = await import('./src/confluence-client');
+    const client = new ConfluenceClient(confluenceBaseUrl, confluenceEmail, confluenceApiToken);
+
+    let count = 0;
+    for (const target of this.settings.syncTargets) {
+      try {
+        const manifestPath = `${target.syncFolderPath}/manifest.json`;
+        const manifest = await readManifestFile(this.app.vault, manifestPath);
+        if (!manifest) continue;
+        const index = buildManifestIndex(manifest);
+
+        const { id: spaceId } = await client.getSpaceByKey(target.spaceKey);
+        const pages = await client.getSpacePages(spaceId, target.spaceKey);
+
+        for (const page of pages) {
+          const node = index.get(page.id);
+          if (!node) continue;
+          const remoteTime = new Date(page.versionDate).getTime();
+          const syncedTime = new Date(node.lastSynced).getTime();
+          if (remoteTime > syncedTime) count++;
+        }
+      } catch { /* network errors are silent — polling is best-effort */ }
+    }
+
+    if (count !== this.pendingRemoteChanges) {
+      this.pendingRemoteChanges = count;
+      this.refreshWritebackView();
+    }
+  }
+
+  refreshWritebackView(): void {
+    const leaves = this.app.workspace.getLeavesOfType(WRITEBACK_VIEW_TYPE);
+    for (const leaf of leaves) {
+      if (leaf.view instanceof WritebackView) {
+        void (leaf.view as WritebackView).refresh();
+      }
+    }
   }
 
   openWritebackView(): void {
@@ -269,6 +327,9 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
     } finally {
       this.syncInProgress = false;
       this.clearStatus();
+      this.pendingRemoteChanges = 0;
+      this.refreshWritebackView();
+      void this.pollRemoteChanges();
     }
   }
 
@@ -513,6 +574,36 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
       });
 
     // Herbalist integration section
+    new Setting(containerEl).setName('Remote polling').setHeading();
+
+    const pollIntervalSetting = new Setting(containerEl)
+      .setName('Check interval')
+      .setDesc('How often to poll Confluence for remote changes.')
+      .addDropdown((d) =>
+        d
+          .addOptions({ '5': '5 minutes', '15': '15 minutes', '30': '30 minutes', '60': '1 hour' })
+          .setValue(String(this.plugin.settings.pollingIntervalMinutes))
+          .onChange(async (v) => {
+            this.plugin.settings.pollingIntervalMinutes = parseInt(v);
+            await this.plugin.saveSettings();
+            this.plugin.startPolling();
+          })
+      );
+
+    new Setting(containerEl)
+      .setName('Enable polling')
+      .setDesc('Periodically check Confluence for pages updated since last sync and show a badge in the changes panel.')
+      .addToggle((t) =>
+        t.setValue(this.plugin.settings.pollingEnabled).onChange(async (v) => {
+          this.plugin.settings.pollingEnabled = v;
+          pollIntervalSetting.settingEl.style.display = v ? '' : 'none';
+          await this.plugin.saveSettings();
+          this.plugin.startPolling();
+        })
+      );
+
+    pollIntervalSetting.settingEl.style.display = this.plugin.settings.pollingEnabled ? '' : 'none';
+
     new Setting(containerEl).setName('Herbalist integration').setHeading();
 
     const s = this.plugin.settings;

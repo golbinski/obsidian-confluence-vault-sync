@@ -1,7 +1,7 @@
 {
   "id": "confluence-vault-sync",
   "name": "Confluence Vault Sync",
-  "version": "0.8.4",
+  "version": "0.8.5",
   "minAppVersion": "1.4.0",
   "description": "Synchronizes a Confluence Cloud space into a local vault folder.",
   "author": "golbinski",
