@@ -41,7 +41,9 @@ export function stripFrontmatter(content: string): string {
   return match ? content.slice(match[0].length) : content;
 }
 
-/** Returns paths of all writable (unlocked) .md files under folderPath. */
+/** Returns paths of all writable (unlocked) .md files under folderPath.
+ *  Files without a confluence-id frontmatter field are skipped — they are
+ *  new local files not yet published, not unlocked synced pages. */
 export async function findUnlockedFiles(vault: Vault, folderPath: string): Promise<string[]> {
   const result: string[] = [];
 
@@ -53,7 +55,13 @@ export async function findUnlockedFiles(vault: Vault, folderPath: string): Promi
       return;
     }
     for (const file of listed.files) {
-      if (file.endsWith('.md') && isWritable(vault, file)) result.push(file);
+      if (!file.endsWith('.md') || !isWritable(vault, file)) continue;
+      try {
+        const content = await vault.adapter.read(file);
+        if (extractFrontmatterField(content, 'confluence-id')) result.push(file);
+      } catch {
+        // unreadable — skip
+      }
     }
     for (const folder of listed.folders) {
       await scan(folder);
