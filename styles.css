@@ -96,7 +96,7 @@
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 2px 4px 2px 0;
+  padding: 2px 4px;
   border-radius: 4px;
   margin-bottom: 1px;
   font-size: 0.85em;
@@ -112,8 +112,8 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  overflow: hidden;
-  padding-left: 4px;
+  flex: 1;
+  min-width: 0;
 }
 
 /* Writeback view: page title */
@@ -123,23 +123,11 @@
   white-space: nowrap;
 }
 
-/* Writeback view: indent guide lines */
-.cvs-indent-guide {
-  display: inline-flex;
-  width: 16px;
-  flex-shrink: 0;
-  align-self: stretch;
-  position: relative;
-}
-
-.cvs-indent-guide::after {
-  content: '';
-  position: absolute;
-  left: 8px;
-  top: 0;
-  bottom: 0;
-  width: 1px;
-  background: var(--background-modifier-border);
+/* Writeback view: children container — provides indentation + continuous guide line */
+.cvs-folder-children {
+  margin-left: 10px;
+  padding-left: 8px;
+  border-left: 1px solid var(--background-modifier-border);
 }
 
 .cvs-page-title--dim {
@@ -191,7 +179,7 @@
   display: flex;
   align-items: center;
   gap: 4px;
-  padding: 2px 4px 2px 0;
+  padding: 2px 4px;
   border-radius: 4px;
   margin-bottom: 1px;
   font-size: 0.85em;

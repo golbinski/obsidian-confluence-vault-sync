@@ -311,7 +311,7 @@ export class WritebackView extends ItemView {
         });
       }
 
-      this.renderFolderTree(section, tree, activeFilePath, 0, spaceKey, '', autoExpand);
+      this.renderFolderTree(section, tree, activeFilePath, spaceKey, '', autoExpand);
     }
   }
 
@@ -319,24 +319,21 @@ export class WritebackView extends ItemView {
     container: HTMLElement,
     tree: FolderTree,
     activeFilePath: string | null,
-    depth: number,
     spaceKey: string,
     folderPath: string,
     autoExpand: Set<string>,
   ): void {
     for (const entry of tree.pages) {
-      this.renderRow(container, entry, entry.path === activeFilePath, depth);
+      this.renderRow(container, entry, entry.path === activeFilePath);
     }
     const sortedFolders = [...tree.subfolders.entries()].sort(([a], [b]) => a.localeCompare(b));
     for (const [name, subtree] of sortedFolders) {
       const subPath = folderPath ? `${folderPath}/${name}` : name;
       const key = `${spaceKey}:${subPath}`;
       const pluginOpen = autoExpand.has(subPath);
-      // Plugin auto-expand always wins; otherwise user state; default is closed
       const expanded = pluginOpen || (this.userExpanded.has(key) && !this.userCollapsed.has(key));
 
       const folderRow = container.createDiv({ cls: 'cvs-folder-row' });
-      addGuides(folderRow, depth);
 
       const chevron = folderRow.createSpan({ cls: 'cvs-folder-chevron' });
       setIcon(chevron, expanded ? 'chevron-down' : 'chevron-right');
@@ -358,23 +355,21 @@ export class WritebackView extends ItemView {
       });
 
       if (expanded) {
-        this.renderFolderTree(container, subtree, activeFilePath, depth + 1, spaceKey, subPath, autoExpand);
+        const children = container.createDiv({ cls: 'cvs-folder-children' });
+        this.renderFolderTree(children, subtree, activeFilePath, spaceKey, subPath, autoExpand);
       }
     }
   }
 
-  private renderRow(container: HTMLElement, entry: PageEntry, isActive = false, depth = 0, compact = false): void {
+  private renderRow(container: HTMLElement, entry: PageEntry, isActive = false): void {
     const row = container.createDiv({ cls: 'cvs-page-row' });
     if (isActive) row.addClass('cvs-page-row--active');
-    if (!compact) addGuides(row, depth);
 
-    if (!compact) {
-      const left = row.createDiv({ cls: 'cvs-row-left' });
-      const titleEl = left.createSpan({ text: entry.title, cls: 'cvs-page-title' });
-      if (entry.state.kind === 'has-unsupported') titleEl.addClass('cvs-page-title--dim');
-      if (entry.state.kind === 'new') titleEl.addClass('cvs-page-title--new');
-      if (entry.state.kind === 'modified') titleEl.addClass('cvs-page-title--modified');
-    }
+    const left = row.createDiv({ cls: 'cvs-row-left' });
+    const titleEl = left.createSpan({ text: entry.title, cls: 'cvs-page-title' });
+    if (entry.state.kind === 'has-unsupported') titleEl.addClass('cvs-page-title--dim');
+    if (entry.state.kind === 'new') titleEl.addClass('cvs-page-title--new');
+    if (entry.state.kind === 'modified') titleEl.addClass('cvs-page-title--modified');
 
     const right = row.createDiv({ cls: 'cvs-row-right' });
 
@@ -851,10 +846,6 @@ function fmtDate(iso: string): string {
 interface FolderTree {
   pages: PageEntry[];
   subfolders: Map<string, FolderTree>;
-}
-
-function addGuides(el: HTMLElement, depth: number): void {
-  for (let i = 0; i < depth; i++) el.createSpan({ cls: 'cvs-indent-guide' });
 }
 
 function foldersContaining(filePath: string, rootFolder: string): Set<string> {
