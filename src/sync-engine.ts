@@ -1,6 +1,6 @@
 import { Notice, Vault } from 'obsidian';
-import type { ConfluenceVaultSyncSettings, SyncTarget } from './settings';
-import { ConfluenceClient, type ConfluencePage } from './confluence-client';
+import type { ConfluenceVaultSyncSettings, SyncTarget, VersionHistorySettings } from './settings';
+import { ConfluenceClient, type ConfluencePage, type PageVersion } from './confluence-client';
 import { AdfConverter } from './adf-converter';
 import { ImageDownloader } from './image-downloader';
 import {
@@ -70,7 +70,8 @@ function flattenTree(nodes: PageNode[]): ConfluencePage[] {
 /** Scan all .md files under a vault path and return a map of pageId → {path, lastSynced}. */
 async function scanExistingFiles(
   vault: Vault,
-  dirPath: string
+  dirPath: string,
+  excludeFolders: Set<string> = new Set()
 ): Promise<Map<string, { path: string; lastSynced: string }>> {
   const result = new Map<string, { path: string; lastSynced: string }>();
 
@@ -93,6 +94,7 @@ async function scanExistingFiles(
       } catch { /* skip unreadable files */ }
     }
     for (const folder of listed.folders) {
+      if (excludeFolders.has(folder)) continue;
       await scanDir(folder);
     }
   }
@@ -105,7 +107,8 @@ async function scanExistingFiles(
 async function removeOrphanedFiles(
   vault: Vault,
   syncFolderPath: string,
-  expectedPaths: Set<string>
+  expectedPaths: Set<string>,
+  excludeFolders: Set<string> = new Set()
 ): Promise<void> {
   async function cleanDir(dir: string): Promise<boolean> {
     let listed;
@@ -124,6 +127,7 @@ async function removeOrphanedFiles(
     }
 
     for (const folder of listed.folders) {
+      if (excludeFolders.has(folder)) continue; // managed separately
       const isEmpty = await cleanDir(folder);
       if (isEmpty && folder !== `${syncFolderPath}/attachments`) {
         try {
@@ -175,19 +179,160 @@ function buildFrontmatter(
   baseUrl: string,
   spaceKey: string,
   title: string,
-  lastSynced: string
+  lastSynced: string,
+  versionEpoch?: number
 ): string {
-  return [
+  const lines = [
     '---',
     `confluence-id: "${pageId}"`,
     `confluence-url: "${pageUrl(baseUrl, spaceKey, pageId)}"`,
     `confluence-title: "${title.replace(/"/g, '\\"')}"`,
     `space: "${spaceKey}"`,
     `last-synced: "${lastSynced}"`,
+  ];
+  if (versionEpoch !== undefined) lines.push(`revision-epoch: ${versionEpoch}`);
+  lines.push('read-only: true', '---', '');
+  return lines.join('\n');
+}
+
+function buildRevisionFrontmatter(
+  pageId: string,
+  baseUrl: string,
+  spaceKey: string,
+  version: PageVersion,
+  primaryWikiPath: string
+): string {
+  const epoch = Math.floor(new Date(version.createdAt).getTime() / 1000);
+  return [
+    '---',
+    `confluence-id: "${pageId}"`,
+    `revision-epoch: ${epoch}`,
+    `revision-date: "${version.createdAt}"`,
+    `revision-author-id: "${version.authorId}"`,
+    `archive-of: "[[${primaryWikiPath}]]"`,
+    `confluence-url: "${pageUrl(baseUrl, spaceKey, pageId)}"`,
     `read-only: true`,
     '---',
     '',
   ].join('\n');
+}
+
+function escapeForRegex(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+async function mkdirp(vault: Vault, dir: string): Promise<void> {
+  const parts = dir.split('/');
+  for (let i = 1; i <= parts.length; i++) {
+    try { await vault.adapter.mkdir(parts.slice(0, i).join('/')); } catch { /* exists */ }
+  }
+}
+
+/** Fetch and write revision files for a single page into the archive folder. */
+export async function syncRevisions(
+  vault: Vault,
+  client: ConfluenceClient,
+  pageId: string,
+  primaryVaultPath: string,
+  syncFolderPath: string,
+  vhSettings: VersionHistorySettings,
+  baseUrl: string,
+  spaceKey: string
+): Promise<void> {
+  const { maxVersions, archiveFolder } = vhSettings;
+  if (maxVersions <= 0) return;
+
+  let versions: PageVersion[];
+  try {
+    versions = await client.getPageVersions(pageId, maxVersions);
+  } catch (err) {
+    console.warn(`${LOG} failed to fetch versions for page ${pageId}:`, err);
+    return;
+  }
+
+  // Nothing to archive if the page has never had more than one version
+  if (versions.length === 0 || (versions.length === 1 && versions[0].number === 1)) return;
+
+  // Vault-relative paths
+  // e.g. primaryVaultPath = "Engineering/Architecture/Auth-Service.md"
+  //      relativeBase     = "Architecture/Auth-Service"
+  //      archiveBasePath  = "Engineering/.confluence/Architecture/Auth-Service"
+  const relativeBase = primaryVaultPath.slice(syncFolderPath.length + 1).replace(/\.md$/, '');
+  const archiveFolderPath = `${syncFolderPath}/${archiveFolder}`;
+  const archiveBasePath = `${archiveFolderPath}/${relativeBase}`;
+  const archiveDir = archiveBasePath.split('/').slice(0, -1).join('/');
+  const primaryWikiPath = primaryVaultPath.replace(/\.md$/, '');
+
+  await mkdirp(vault, archiveDir);
+
+  const versionNumbers = new Set(versions.map((v) => v.number));
+
+  for (const version of versions) {
+    const revPath = `${archiveBasePath}.v${version.number}.md`;
+    const content = buildRevisionFrontmatter(pageId, baseUrl, spaceKey, version, primaryWikiPath);
+    await vault.adapter.write(revPath, content);
+  }
+
+  // Remove stale revision files (versions no longer returned by the API)
+  try {
+    const listed = await vault.adapter.list(archiveDir);
+    const filename = relativeBase.split('/').pop()!;
+    const pattern = new RegExp(`^${escapeForRegex(filename)}\\.v(\\d+)\\.md$`);
+    for (const file of listed.files) {
+      const name = file.split('/').pop() ?? '';
+      const match = name.match(pattern);
+      if (match && !versionNumbers.has(parseInt(match[1], 10))) {
+        await vault.adapter.remove(file);
+      }
+    }
+  } catch { /* archive dir may not yet have any stale files */ }
+}
+
+/** Remove revision files whose confluence-id is no longer in the valid page set. */
+export async function cleanDeletedPageRevisions(
+  vault: Vault,
+  archiveFolderPath: string,
+  validPageIds: Set<string>
+): Promise<void> {
+  async function cleanDir(dir: string): Promise<void> {
+    let listed;
+    try {
+      listed = await vault.adapter.list(dir);
+    } catch {
+      return;
+    }
+    for (const file of listed.files) {
+      if (!file.endsWith('.md')) continue;
+      try {
+        const content = await vault.adapter.read(file);
+        const pageId = extractFrontmatterField(content, 'confluence-id');
+        if (pageId && !validPageIds.has(pageId)) {
+          await vault.adapter.remove(file);
+        }
+      } catch { /* skip unreadable */ }
+    }
+    for (const folder of listed.folders) {
+      await cleanDir(folder);
+      try {
+        const recheck = await vault.adapter.list(folder);
+        if (recheck.files.length === 0 && recheck.folders.length === 0) {
+          await (vault.adapter as unknown as { rmdir(p: string, r: boolean): Promise<void> }).rmdir(folder, true);
+        }
+      } catch { /* ignore */ }
+    }
+  }
+  await cleanDir(archiveFolderPath);
+}
+
+/** Write the .herbalist.yaml versioning config at the sync folder root. */
+export async function writeHerbalistConfig(vault: Vault, syncFolderPath: string): Promise<void> {
+  const configPath = `${syncFolderPath}/.herbalist.yaml`;
+  const content = 'versioning:\n  resource_key: confluence-id\n  revision_key: revision-epoch\n';
+  try {
+    await vault.adapter.write(configPath, content);
+  } catch (err) {
+    console.warn(`${LOG} failed to write .herbalist.yaml at ${configPath}:`, err);
+  }
 }
 
 export interface ManifestAttachment {
@@ -479,8 +624,14 @@ export async function runSyncForTarget(
       })
     : filteredPages;
 
+  // Version history config (resolved once, used throughout)
+  const vhEnabled = settings.versionHistory?.enabled ?? false;
+  const archiveFolder = settings.versionHistory?.archiveFolder ?? '.confluence';
+  const archiveFolderPath = `${syncFolderPath}/${archiveFolder}`;
+  const excludeFolders = vhEnabled ? new Set([archiveFolderPath]) : new Set<string>();
+
   // 4. Scan existing files to find what's already synced and up-to-date
-  const existingFiles = await scanExistingFiles(vault, syncFolderPath);
+  const existingFiles = await scanExistingFiles(vault, syncFolderPath, excludeFolders);
   console.debug(`${LOG} ${existingFiles.size} existing synced files found`);
 
   // 5. Pre-create all directories needed for this sync pass.
@@ -493,6 +644,7 @@ export async function runSyncForTarget(
       const dir = vaultPath.split('/').slice(0, -1).join('/');
       if (dir) dirs.add(dir);
     }
+    if (vhEnabled) dirs.add(archiveFolderPath);
     const sorted = [...dirs].sort((a, b) => a.split('/').length - b.split('/').length);
     for (const dir of sorted) {
       try { await vault.adapter.mkdir(dir); } catch { /* already exists */ }
@@ -577,12 +729,19 @@ export async function runSyncForTarget(
       );
 
       const lastSynced = new Date().toISOString();
+      const versionEpoch = vhEnabled
+        ? Math.floor(new Date(page.versionDate).getTime() / 1000)
+        : undefined;
       const content =
-        buildFrontmatter(page.id, confluenceBaseUrl, spaceKey, page.title, lastSynced) + markdown;
+        buildFrontmatter(page.id, confluenceBaseUrl, spaceKey, page.title, lastSynced, versionEpoch) + markdown;
 
       if (existing) makeWritable(vault, vaultPath);
       await vault.adapter.write(vaultPath, content);
       makeReadOnly(vault, vaultPath);
+
+      if (vhEnabled) {
+        await syncRevisions(vault, client, page.id, vaultPath, syncFolderPath, settings.versionHistory, confluenceBaseUrl, spaceKey);
+      }
 
       const labels = await labelsPromise;
       manifestData.set(page.id, { labels, lastSynced, attachments, hasUnsupportedContent });
@@ -596,13 +755,19 @@ export async function runSyncForTarget(
 
   // 7. Orphan removal — scoped to the pull target
   if (scope.kind === 'space') {
-    await removeOrphanedFiles(vault, syncFolderPath, expectedPaths);
+    await removeOrphanedFiles(vault, syncFolderPath, expectedPaths, excludeFolders);
   } else {
     // subtree: only remove files deleted from Confluence within the targeted folder
     const subtreeExpected = new Set(
       [...expectedPaths].filter((p) => p.startsWith(scope.vaultPath + '/'))
     );
     await removeOrphanedFiles(vault, scope.vaultPath, subtreeExpected);
+  }
+
+  // 7b. Archive cleanup — remove revision files for pages deleted from Confluence
+  if (vhEnabled) {
+    const validPageIds = new Set(pathMap.keys());
+    await cleanDeletedPageRevisions(vault, archiveFolderPath, validPageIds);
   }
 
   // 8. Manifest update — reflects vault state, not Confluence state.
@@ -637,6 +802,11 @@ export async function runSyncForTarget(
     }
   } catch (err) {
     console.warn(`${LOG} failed to write manifest at ${manifestPath}:`, err);
+  }
+
+  // 9. Write .herbalist.yaml at sync folder root when version history is active
+  if (vhEnabled) {
+    await writeHerbalistConfig(vault, syncFolderPath);
   }
 
   console.debug(
@@ -695,11 +865,17 @@ export async function runPagePull(
   );
 
   const newLastSynced = new Date().toISOString();
-  const newContent = buildFrontmatter(pageId, confluenceBaseUrl, spaceKey, title, newLastSynced) + markdown;
+  const vhEnabled = settings.versionHistory?.enabled ?? false;
+  const versionEpoch = vhEnabled ? Math.floor(new Date(updatedAt).getTime() / 1000) : undefined;
+  const newContent = buildFrontmatter(pageId, confluenceBaseUrl, spaceKey, title, newLastSynced, versionEpoch) + markdown;
 
   makeWritable(vault, vaultPath);
   await vault.adapter.write(vaultPath, newContent);
   makeReadOnly(vault, vaultPath);
+
+  if (vhEnabled) {
+    await syncRevisions(vault, client, pageId, vaultPath, syncFolderPath, settings.versionHistory, confluenceBaseUrl, spaceKey);
+  }
 
   // Update only this page's manifest entry
   if (manifest) {

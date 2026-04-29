@@ -103,6 +103,9 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
               });
           });
         } else if (file instanceof TFile && file.extension === 'md') {
+          // Skip revision files in the archive folder — they are not pullable pages
+          const archiveFolder = this.settings.versionHistory?.archiveFolder || '.confluence';
+          if (file.path.includes(`/${archiveFolder}/`)) return;
           menu.addItem((item) => {
             item
               .setTitle('Pull this page')
@@ -224,6 +227,8 @@ export default class ConfluenceVaultSyncPlugin extends Plugin {
   async loadSettings(): Promise<void> {
     const data = await this.loadData();
     this.settings = Object.assign({}, DEFAULT_SETTINGS, data);
+    // Deep-merge nested objects so new sub-fields get their defaults when missing from saved data
+    this.settings.versionHistory = Object.assign({}, DEFAULT_SETTINGS.versionHistory, data?.versionHistory);
     // Decrypt token from disk into the in-memory settings field
     this.settings.confluenceApiToken = decryptToken(this.settings.confluenceApiToken);
     // Auto-detect herbalist binary on first load
@@ -641,6 +646,58 @@ class ConfluenceVaultSyncSettingTab extends PluginSettingTab {
 
     const depSettings = [binarySetting, scopeSetting, modelSetting];
     toggleDeps(s.herbalistEnabled);
+
+    // Version history section
+    new Setting(containerEl).setName('Version history (herbalist-mcp)').setHeading();
+
+    const vhToggleDeps: Setting[] = [];
+    const toggleVhDeps = (enabled: boolean): void => {
+      vhToggleDeps.forEach((d) => { d.settingEl.style.display = enabled ? '' : 'none'; });
+    };
+
+    new Setting(containerEl)
+      .setName('Enable version history')
+      .setDesc(
+        'Fetch revision history for each Confluence page and write frontmatter-only revision files ' +
+        'into the archive folder. Intended for herbalist-mcp graph indexing; files are read-only.'
+      )
+      .addToggle((t) =>
+        t.setValue(s.versionHistory.enabled).onChange(async (v) => {
+          s.versionHistory.enabled = v;
+          await this.plugin.saveSettings();
+          toggleVhDeps(v);
+        })
+      );
+
+    const vhMaxVersionsSetting = new Setting(containerEl)
+      .setName('Max versions per page')
+      .setDesc('Number of historical versions to keep (1–50).')
+      .addSlider((slider) =>
+        slider
+          .setLimits(1, 50, 1)
+          .setValue(s.versionHistory.maxVersions)
+          .setDynamicTooltip()
+          .onChange(async (value) => {
+            s.versionHistory.maxVersions = value;
+            await this.plugin.saveSettings();
+          })
+      );
+
+    const vhFolderSetting = new Setting(containerEl)
+      .setName('Archive folder')
+      .setDesc('Folder name inside each sync target that stores revision files (default: .confluence).')
+      .addText((t) =>
+        t
+          .setPlaceholder('.confluence')
+          .setValue(s.versionHistory.archiveFolder)
+          .onChange(async (v) => {
+            s.versionHistory.archiveFolder = v.trim() || '.confluence';
+            await this.plugin.saveSettings();
+          })
+      );
+
+    vhToggleDeps.push(vhMaxVersionsSetting, vhFolderSetting);
+    toggleVhDeps(s.versionHistory.enabled);
 
     // Sync targets section
     new Setting(containerEl).setName('Sync targets').setHeading();

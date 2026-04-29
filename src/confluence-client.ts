@@ -29,6 +29,12 @@ export interface AdfMark {
   attrs?: Record<string, unknown>;
 }
 
+export interface PageVersion {
+  number: number;
+  createdAt: string;
+  authorId: string;
+}
+
 const LOG = '[Confluence Vault Sync]';
 
 // Retry settings for transient failures (429 rate-limit, 5xx server errors).
@@ -296,6 +302,18 @@ export class ConfluenceClient {
     }
 
     return labels;
+  }
+
+  /** Returns up to `maxVersions` versions of a page, sorted newest first. */
+  async getPageVersions(pageId: string, maxVersions: number): Promise<PageVersion[]> {
+    const data = await this.request<{
+      results: Array<{ number: number; createdAt: string; authorId?: string }>;
+    }>(`${this.baseUrl}/wiki/api/v2/pages/${pageId}/versions?limit=${maxVersions}&sort=-version`);
+    return data.results.map((v) => ({
+      number: v.number,
+      createdAt: v.createdAt ?? new Date(0).toISOString(),
+      authorId: v.authorId ?? '',
+    }));
   }
 
   /** Returns the current version number, last-updated timestamp, and title of a page. */

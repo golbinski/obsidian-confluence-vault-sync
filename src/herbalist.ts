@@ -40,6 +40,10 @@ export function runHerbalistIndex(plugin: ConfluenceVaultSyncPlugin, vaultRoot: 
     for (const target of settings.syncTargets) {
       if (target.syncFolderPath) {
         args.push('--include', target.syncFolderPath);
+        if (settings.versionHistory?.enabled) {
+          const archiveFolder = settings.versionHistory.archiveFolder || '.confluence';
+          args.push('--include', `${target.syncFolderPath}/${archiveFolder}`);
+        }
       }
     }
   }

@@ -3,6 +3,12 @@ export interface SyncTarget {
   syncFolderPath: string;
 }
 
+export interface VersionHistorySettings {
+  enabled: boolean;
+  maxVersions: number;
+  archiveFolder: string;
+}
+
 export interface ConfluenceVaultSyncSettings {
   confluenceBaseUrl: string;
   confluenceEmail: string;
@@ -17,6 +23,7 @@ export interface ConfluenceVaultSyncSettings {
   herbalistModel: string;
   pollingEnabled: boolean;
   pollingIntervalMinutes: number;
+  versionHistory: VersionHistorySettings;
 }
 
 export const DEFAULT_SETTINGS: ConfluenceVaultSyncSettings = {
@@ -33,4 +40,9 @@ export const DEFAULT_SETTINGS: ConfluenceVaultSyncSettings = {
   herbalistModel: 'bge-small-en-v1.5',
   pollingEnabled: false,
   pollingIntervalMinutes: 15,
+  versionHistory: {
+    enabled: false,
+    maxVersions: 10,
+    archiveFolder: '.confluence',
+  },
 };
